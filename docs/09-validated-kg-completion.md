@@ -16,7 +16,7 @@ Validated_KG_Completion/
 
 Both scripts read a **tab-separated** file of triples (`subject<TAB>predicate<TAB>object`, no header).
 The normalization pipeline writes N-Triples, so the normalized `.nt` must be converted to TSV first. Some
-benchmarks in the repository already have a `.tsv` beside the `.nt` (for example `Transformed_SGKG4/`).
+benchmarks in the repository already have a `.tsv` beside the `.nt` (for example `Output/SGKG/transformed/SGKG_normalized.tsv`).
 
 ## KGC.py - fixed hyperparameters
 
