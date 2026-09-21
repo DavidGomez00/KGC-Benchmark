@@ -1,11 +1,11 @@
 # 09 - Validated KG completion
 
-`Validated_KG_Completion/` measures what normalization does for link prediction. It trains knowledge graph
+`Completion/` measures what normalization does for link prediction. It trains knowledge graph
 embedding models with [PyKEEN](https://pykeen.readthedocs.io/) on a graph (typically the normalized KG from
 part 1) and reports standard link-prediction metrics.
 
 ```
-Validated_KG_Completion/
+Completion/
 ├── KGC.py               Train and evaluate models with fixed hyperparameters
 ├── input_KGC.json       Configuration for KGC.py
 ├── KGC_hpo.py           Train and evaluate models with hyperparameter optimization
@@ -21,7 +21,7 @@ benchmarks in the repository already have a `.tsv` beside the `.nt` (for example
 ## KGC.py - fixed hyperparameters
 
 ```bash
-cd Validated_KG_Completion
+cd Completion
 python KGC.py
 ```
 
