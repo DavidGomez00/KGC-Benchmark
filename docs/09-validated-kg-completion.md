@@ -69,7 +69,7 @@ To measure the impact of the pipeline, run the same script with the same seed on
 | Run | `kg_path` |
 |---|---|
 | Baseline | The original graph converted to TSV |
-| Normalized | The `TransformedKG_<KG>` graph converted to TSV |
+| Normalized | The `<KG>_normalized` graph converted to TSV |
 
 and compare the metrics saved by PyKEEN.
 
