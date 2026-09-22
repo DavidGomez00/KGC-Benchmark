@@ -189,15 +189,15 @@ def create_model(
             testing=tf_testing,
             model=embedding,
             training_loop="sLCWA",
-            model_kwargs=dict(embedding_dim=embedding_dim),
-            negative_sampler_kwargs=dict(filtered=filtered_negative_sampling),
+            model_kwargs={"embedding_dim": embedding_dim},
+            negative_sampler_kwargs={"filtered": filtered_negative_sampling},
             # Training configuration
-            training_kwargs=dict(
-                num_epochs=n_epoch,
-                use_tqdm_batch=True,
-                drop_last=False,
-                batch_size=batch_size,
-            ),
+            training_kwargs={
+                "num_epochs": n_epoch,
+                "use_tqdm_batch": True,
+                "drop_last": False,
+                "batch_size": batch_size,
+            },
             # Runtime configuration
             random_seed=random_seed,
         )
