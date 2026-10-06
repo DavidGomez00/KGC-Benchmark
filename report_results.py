@@ -48,7 +48,7 @@ Usage:
     python report_results.py
     python report_results.py --root Output --output Output/metrics_report.csv
     python report_results.py --reference source --compare "skgg*" --analysis-dir Output/prediction_analysis
-"""
+"""  # noqa: EXE001
 
 from __future__ import annotations
 
