@@ -30,10 +30,9 @@ is left out of the analysis.
 The reference KG (`--reference`, `source` by default) is then compared
 prediction by prediction with every sibling dataset matching `--compare`
 (`skgg*` by default, e.g. `skgg_std=1`): synthetic graphs generated from it
-that keep its entity names. They share no test triples with it -- skgg
-keeps each entity's relations but rewires their targets, and each graph is
-split on its own -- so predictions are paired by query: a tail query
-`(h, r, ?)` or a head query `(?, r, t)` held out in both graphs, each graph
+that keep its entity names. They share no test triples with it  so
+predictions are paired by query: a tail query `(h, r, ?)` or a head query
+`(?, r, t)` held out in both graphs, each graph
 ranking its own held-out answers. PyGraft renames every entity, so its
 queries never pair. The analysis is written to `--analysis-dir`:
 
@@ -41,6 +40,7 @@ queries never pair. The analysis is written to `--analysis-dir`:
     relation_report.csv              the table's metrics per relation
     query_comparison.csv             one row per query paired between two graphs
     query_comparison_summary.csv     correlation and agreement per stratum and k
+    <kg>_relations.png               MRR and Hits@10 per relation, model and graph
     <kg>_<compared>_<model>.png      rank distributions and rank transitions
 
 Usage:
@@ -139,11 +139,35 @@ INK_SECONDARY = "#52514e"
 INK_MUTED = "#898781"
 GRIDLINE = "#e1e0d9"
 BASELINE = "#c3c2b7"
-SERIES_COLORS = ("#2a78d6", "#eb6834")  # reference graph, compared graph
+# One color per graph, in the palette's validated order (see graph_order).
+CATEGORICAL = [
+    "#2a78d6",  # blue
+    "#eb6834",  # orange
+    "#1baf7a",  # aqua
+    "#eda100",  # yellow
+    "#e87ba4",  # magenta
+    "#008300",  # green
+    "#4a3aa7",  # violet
+    "#e34948",  # red
+]
+SERIES_COLORS = CATEGORICAL[:2]  # reference graph, compared graph
 SEQUENTIAL = LinearSegmentedColormap.from_list(
     "blue",
-    ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5",
-     "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281", "#0d366b"],
+    [
+        "#cde2fb",
+        "#b7d3f6",
+        "#9ec5f4",
+        "#86b6ef",
+        "#6da7ec",
+        "#5598e7",
+        "#3987e5",
+        "#2a78d6",
+        "#256abf",
+        "#1c5cab",
+        "#184f95",
+        "#104281",
+        "#0d366b",
+    ],
 )
 BAR_WIDTH_PX = 24
 BAR_GAP_PX = 2
@@ -212,7 +236,9 @@ def write_csv(rows: list[dict], output: Path) -> None:
 
 def read_split(path: Path) -> np.ndarray:
     """Read a split KGC.py saved with `save_splits`: one tab-separated labeled triple per line."""
-    return pd.read_csv(path, sep="\t", header=None, dtype=str, keep_default_na=False).to_numpy()
+    return pd.read_csv(
+        path, sep="\t", header=None, dtype=str, keep_default_na=False
+    ).to_numpy()
 
 
 def rank_predictions(dataset_dir: Path, model_dir: Path) -> pd.DataFrame | None:
@@ -230,10 +256,16 @@ def rank_predictions(dataset_dir: Path, model_dir: Path) -> pd.DataFrame | None:
     `side` is the entity being predicted, or None (and prints a warning) if
     a file is missing or the test labels aren't in the model's vocabulary.
     """
-    needed = [dataset_dir / "test", model_dir / "trained_model.pkl", model_dir / "training_triples"]
+    needed = [
+        dataset_dir / "test",
+        model_dir / "trained_model.pkl",
+        model_dir / "training_triples",
+    ]
     missing = [str(p) for p in needed if not p.exists()]
     if missing:
-        print(f"warning: no prediction analysis for {model_dir} (missing {', '.join(missing)})")
+        print(
+            f"warning: no prediction analysis for {model_dir} (missing {', '.join(missing)})"
+        )
         return None
 
     test = read_split(dataset_dir / "test")
@@ -257,7 +289,9 @@ def rank_predictions(dataset_dir: Path, model_dir: Path) -> pd.DataFrame | None:
         heads[r, t].append(h)
 
     # The pickle holds the whole model object, not just its weights.
-    model = torch.load(model_dir / "trained_model.pkl", map_location="cpu", weights_only=False)
+    model = torch.load(
+        model_dir / "trained_model.pkl", map_location="cpu", weights_only=False
+    )
     model.eval()
     ranks = {}
     with torch.inference_mode():
@@ -268,7 +302,9 @@ def rank_predictions(dataset_dir: Path, model_dir: Path) -> pd.DataFrame | None:
                 rows = torch.arange(len(batch))
                 true_scores = scores[rows, batch[:, column]]
                 for i, (h, r, t) in enumerate(batch.tolist()):
-                    scores[i, heads[r, t] if side == "head" else tails[h, r]] = float("nan")
+                    scores[i, heads[r, t] if side == "head" else tails[h, r]] = float(
+                        "nan"
+                    )
                 scores[rows, batch[:, column]] = true_scores
                 # Filtered (NaN) scores compare False, so they never count.
                 better = (scores > true_scores[:, None]).sum(dim=1)
@@ -342,7 +378,9 @@ def query_table(predictions: pd.DataFrame) -> pd.DataFrame:
     prediction per held-out answer; `answers` counts them, and `mrr` and
     `hits_at_k` (the share of answers within the top k) average over them.
     """
-    entity = predictions["head"].where(predictions["side"] == "tail", predictions["tail"])
+    entity = predictions["head"].where(
+        predictions["side"] == "tail", predictions["tail"]
+    )
     grouped = predictions.assign(entity=entity).groupby(
         ["dataset", "model", "side", "relation", "entity"]
     )
@@ -352,7 +390,37 @@ def query_table(predictions: pd.DataFrame) -> pd.DataFrame:
     return queries.reset_index()
 
 
-def compare_queries(queries: pd.DataFrame, reference: str, patterns: list[str]) -> pd.DataFrame:
+def split_dataset(table: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add the `kg` and `graph` columns: the dataset's parent folder and its own
+    name, e.g. `french_royalty` and `skgg_std=1`.
+    """
+    dataset = table["dataset"].map(PurePosixPath)
+    return table.assign(
+        kg=dataset.map(lambda p: p.parent.as_posix()),
+        graph=dataset.map(lambda p: p.name),
+    )
+
+
+def is_compared(graph: str, reference: str, patterns: list[str]) -> bool:
+    """Whether `graph` is compared with the reference graph: it matches a pattern."""
+    return graph != reference and any(fnmatchcase(graph, p) for p in patterns)
+
+
+def graph_order(graphs, reference: str, patterns: list[str]) -> list[str]:
+    """
+    Sort a KG's graphs for the plots: the reference first, then the graphs
+    compared with it, then the rest, so the colors follow the graphs.
+    """
+    return sorted(
+        set(graphs),
+        key=lambda g: (g != reference, not is_compared(g, reference, patterns), g),
+    )
+
+
+def compare_queries(
+    queries: pd.DataFrame, reference: str, patterns: list[str]
+) -> pd.DataFrame:
     """
     Pair the queries of `<kg>/<reference>` with those of every sibling
     dataset `<kg>/<compared>` whose name matches one of `patterns`, for the
@@ -360,18 +428,21 @@ def compare_queries(queries: pd.DataFrame, reference: str, patterns: list[str]) 
     graphs; each graph keeps its own answers and values, in the
     `reference_*` and `compared_*` columns.
     """
-    dataset = queries["dataset"].map(PurePosixPath)
-    queries = queries.assign(
-        kg=dataset.map(lambda p: p.parent.as_posix()), graph=dataset.map(lambda p: p.name)
-    )
+    queries = split_dataset(queries)
     keys = ["kg", "model", "side", "relation", "entity"]
     values = ["answers", "mrr", *HITS_COLUMNS]
-    is_compared = queries["graph"].map(
-        lambda graph: graph != reference and any(fnmatchcase(graph, p) for p in patterns)
+    compared_rows = queries["graph"].map(
+        lambda graph: is_compared(graph, reference, patterns)
     )
-    ref = queries[queries["graph"] == reference].set_index(keys)[values].add_prefix("reference_")
-    cmp = queries[is_compared].set_index(keys)[["graph", *values]]
-    cmp = cmp.rename(columns={"graph": "compared", **{v: f"compared_{v}" for v in values}})
+    ref = (
+        queries[queries["graph"] == reference]
+        .set_index(keys)[values]
+        .add_prefix("reference_")
+    )
+    cmp = queries[compared_rows].set_index(keys)[["graph", *values]]
+    cmp = cmp.rename(
+        columns={"graph": "compared", **{v: f"compared_{v}" for v in values}}
+    )
     paired = ref.join(cmp, how="inner").reset_index()
     paired.insert(1, "reference", reference)
     paired.insert(2, "compared", paired.pop("compared"))
@@ -421,7 +492,9 @@ def agreement(paired: pd.DataFrame, k: int) -> dict:
         "only_compared": only_cmp,
         "neither": neither,
         "compared_accurate_when_reference_accurate": ratio(both, both + only_ref),
-        "compared_accurate_when_reference_inaccurate": ratio(only_cmp, only_cmp + neither),
+        "compared_accurate_when_reference_inaccurate": ratio(
+            only_cmp, only_cmp + neither
+        ),
         "cohen_kappa": ratio(observed - expected, 1 - expected),
     }
 
@@ -495,18 +568,75 @@ def draw_column(ax, x: float, width: float, height: float, color: str) -> None:
     left, right = x - width / 2, x + width / 2
     P = mpath.Path
     vertices = [
-        (left, 0), (left, height - ry), (left, height), (left + rx, height),
-        (right - rx, height), (right, height), (right, height - ry), (right, 0), (left, 0),
+        (left, 0),
+        (left, height - ry),
+        (left, height),
+        (left + rx, height),
+        (right - rx, height),
+        (right, height),
+        (right, height - ry),
+        (right, 0),
+        (left, 0),
     ]
-    codes = [P.MOVETO, P.LINETO, P.CURVE3, P.CURVE3, P.LINETO, P.CURVE3, P.CURVE3, P.LINETO, P.CLOSEPOLY]
+    codes = [
+        P.MOVETO,
+        P.LINETO,
+        P.CURVE3,
+        P.CURVE3,
+        P.LINETO,
+        P.CURVE3,
+        P.CURVE3,
+        P.LINETO,
+        P.CLOSEPOLY,
+    ]
     ax.add_patch(PathPatch(P(vertices, codes), facecolor=color, edgecolor="none"))
+
+
+def style_axes(ax) -> None:
+    """Chart surface, muted tick labels, and no ticks or frame."""
+    ax.set_facecolor(SURFACE)
+    ax.tick_params(length=0, colors=INK_MUTED, labelsize=9)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+
+def draw_grouped_columns(
+    ax, labels: list[str], series: list[tuple[np.ndarray, str]], top: float
+) -> None:
+    """
+    Draw one group of columns per label, one column per (values, color) in
+    `series`, on a y axis from 0 to `top` with a hairline grid and baseline.
+    A NaN value leaves its column out. The axes limits are set first, since
+    the column widths are given in pixels.
+    """
+    x = np.arange(len(labels))
+    ax.set_xlim(-0.6, len(labels) - 0.4)
+    ax.set_ylim(0, top)
+    px_per_unit = ax.transData.transform((1, 0))[0] - ax.transData.transform((0, 0))[0]
+    gap = BAR_GAP_PX / px_per_unit
+    # Columns are at most BAR_WIDTH_PX wide, and a group fills at most 80% of its slot.
+    width = min(
+        BAR_WIDTH_PX / px_per_unit, (0.8 - (len(series) - 1) * gap) / len(series)
+    )
+    span = len(series) * width + (len(series) - 1) * gap
+    for i, (values, color) in enumerate(series):
+        offset = (width - span) / 2 + i * (width + gap)
+        for xi, value in zip(x + offset, values):
+            if not np.isnan(value):
+                draw_column(ax, xi, width, value, color)
+    ax.set_xticks(x, labels)
+    ax.grid(axis="y", color=GRIDLINE, linewidth=PX)
+    ax.set_axisbelow(True)
+    ax.spines["bottom"].set(visible=True, color=BASELINE, linewidth=PX)
 
 
 def fmt(value: float, spec: str) -> str:
     return "n/a" if pd.isna(value) else format(value, spec)
 
 
-def plot_comparison(predictions: pd.DataFrame, paired: pd.DataFrame, path: Path) -> None:
+def plot_comparison(
+    predictions: pd.DataFrame, paired: pd.DataFrame, path: Path
+) -> None:
     """
     Plot one comparison of two graphs with one model (`paired` holds its
     `compare_queries` rows only). Left: how the ranks of all test
@@ -515,17 +645,16 @@ def plot_comparison(predictions: pd.DataFrame, paired: pd.DataFrame, path: Path)
     compared graph, as a share of the row and a count. A query is bucketed
     by 1 / its MRR, its rank when it has a single held-out answer.
     """
-    kg, reference, compared, model = paired[["kg", "reference", "compared", "model"]].iloc[0]
+    kg, reference, compared, model = paired[
+        ["kg", "reference", "compared", "model"]
+    ].iloc[0]
     fig, (left, right) = plt.subplots(
         1, 2, figsize=(12, 5.6), dpi=PLOT_DPI, gridspec_kw={"width_ratios": [1.2, 1]}
     )
     fig.patch.set_facecolor(SURFACE)
     fig.subplots_adjust(left=0.07, right=0.97, top=0.72, bottom=0.12, wspace=0.28)
     for ax in (left, right):
-        ax.set_facecolor(SURFACE)
-        ax.tick_params(length=0, colors=INK_MUTED, labelsize=9)
-        for spine in ax.spines.values():
-            spine.set_visible(False)
+        style_axes(ax)
 
     # Headline: does accurate in the reference graph mean accurate in the other?
     k = max(HITS_AT)
@@ -534,8 +663,15 @@ def plot_comparison(predictions: pd.DataFrame, paired: pd.DataFrame, path: Path)
     when_accurate = rates["compared_accurate_when_reference_accurate"]
     when_inaccurate = rates["compared_accurate_when_reference_inaccurate"]
     title = " / ".join(PurePosixPath(kg).parts + (model,))
-    fig.text(0.07, 0.95, f"{title}: {reference} vs {compared}", color=INK, fontsize=13,
-             fontweight="semibold", va="top")
+    fig.text(
+        0.07,
+        0.95,
+        f"{title}: {reference} vs {compared}",
+        color=INK,
+        fontsize=13,
+        fontweight="semibold",
+        va="top",
+    )
     fig.text(
         0.07,
         0.895,
@@ -559,24 +695,26 @@ def plot_comparison(predictions: pd.DataFrame, paired: pd.DataFrame, path: Path)
         shares[graph] = rank_buckets(predictions.loc[run, "rank"]).value_counts(
             normalize=True, sort=False
         )
-    x = np.arange(len(BUCKET_LABELS))
-    left.set_xlim(-0.6, len(BUCKET_LABELS) - 0.4)
-    left.set_ylim(0, max(s.max() for s in shares.values()) * 1.12)
-    px_per_unit = left.transData.transform((1, 0))[0] - left.transData.transform((0, 0))[0]
-    width, gap = BAR_WIDTH_PX / px_per_unit, BAR_GAP_PX / px_per_unit
-    offsets = (-(width + gap) / 2, (width + gap) / 2)
-    for graph, color, offset in zip((reference, compared), SERIES_COLORS, offsets):
-        for xi, share in zip(x + offset, shares[graph].reindex(BUCKET_LABELS)):
-            draw_column(left, xi, width, share, color)
-    left.set_xticks(x, BUCKET_LABELS)
+    draw_grouped_columns(
+        left,
+        BUCKET_LABELS,
+        [
+            (shares[graph].reindex(BUCKET_LABELS).to_numpy(dtype=float), color)
+            for graph, color in zip((reference, compared), SERIES_COLORS)
+        ],
+        top=max(s.max() for s in shares.values()) * 1.12,
+    )
     left.yaxis.set_major_formatter(PercentFormatter(1, decimals=0))
-    left.grid(axis="y", color=GRIDLINE, linewidth=PX)
-    left.set_axisbelow(True)
-    left.spines["bottom"].set(visible=True, color=BASELINE, linewidth=PX)
     left.set_xlabel("Rank of the true answer", color=INK_SECONDARY, fontsize=9.5)
     left.set_ylabel("Share of test predictions", color=INK_SECONDARY, fontsize=9.5)
-    left.set_title("All test predictions", loc="left", color=INK, fontsize=10.5,
-                   fontweight="semibold", pad=32)
+    left.set_title(
+        "All test predictions",
+        loc="left",
+        color=INK,
+        fontsize=10.5,
+        fontweight="semibold",
+        pad=32,
+    )
     left.legend(
         handles=[
             Patch(facecolor=color, label=f"{graph} ({totals[graph]:,} predictions)")
@@ -617,26 +755,152 @@ def plot_comparison(predictions: pd.DataFrame, paired: pd.DataFrame, path: Path)
             if np.isnan(share):
                 continue
             color = ink_on(SEQUENTIAL(share))
-            right.text(j + 0.5, i + 0.47, f"{share:.0%}", ha="center", va="bottom", color=color,
-                       fontsize=10, fontweight="semibold")
-            right.text(j + 0.5, i + 0.55, f"n={counts.iat[i, j]:,}", ha="center", va="top",
-                       color=color, fontsize=8)
+            right.text(
+                j + 0.5,
+                i + 0.47,
+                f"{share:.0%}",
+                ha="center",
+                va="bottom",
+                color=color,
+                fontsize=10,
+                fontweight="semibold",
+            )
+            right.text(
+                j + 0.5,
+                i + 0.55,
+                f"n={counts.iat[i, j]:,}",
+                ha="center",
+                va="top",
+                color=color,
+                fontsize=8,
+            )
     ticks = np.arange(len(BUCKET_LABELS)) + 0.5
     right.set_xticks(ticks, BUCKET_LABELS)
     right.set_yticks(ticks, BUCKET_LABELS)
     right.set_xlabel(f"Rank in {compared}", color=INK_SECONDARY, fontsize=9.5)
     right.set_ylabel(f"Rank in {reference}", color=INK_SECONDARY, fontsize=9.5)
-    right.set_title("Paired queries, by rank in each graph", loc="left", color=INK, fontsize=10.5,
-                    fontweight="semibold", pad=32)
-    right.text(0, 1.035, "Each cell: share of its row, and number of queries",
-               transform=right.transAxes, color=INK_SECONDARY, fontsize=9)
+    right.set_title(
+        "Paired queries, by rank in each graph",
+        loc="left",
+        color=INK,
+        fontsize=10.5,
+        fontweight="semibold",
+        pad=32,
+    )
+    right.text(
+        0,
+        1.035,
+        "Each cell: share of its row, and number of queries",
+        transform=right.transAxes,
+        color=INK_SECONDARY,
+        fontsize=9,
+    )
+
+    fig.savefig(path, dpi=PLOT_DPI, facecolor=SURFACE)
+    plt.close(fig)
+
+
+def plot_relations(report: pd.DataFrame, graphs: list[str], path: Path) -> None:
+    """
+    Plot one KG's `relation_report` rows (with `kg` and `graph` columns): one
+    row of panels per model, MRR on the left and Hits@10 on the right, with
+    one group of columns per relation and one column per graph trained with
+    that model, colored in the order of `graphs`. A graph without a column
+    for a relation doesn't have that relation.
+    """
+    kg = report["kg"].iat[0]
+    models = sorted(report["model"].unique())
+    relations = sorted(report["relation"].unique())
+    k = max(HITS_AT)
+    metrics = [("mrr", "MRR"), (f"hits_at_{k}", f"Hits@{k}")]
+    colors = dict(zip(graphs, CATEGORICAL))
+
+    # Heights in inches: the header, one row of panels per model, the bottom axis.
+    header, row_height, footer = 1.6, 2.7, 0.5
+    height = header + row_height * len(models) + footer
+    fig, axes = plt.subplots(
+        len(models), 2, figsize=(13, height), dpi=PLOT_DPI, squeeze=False
+    )
+    fig.patch.set_facecolor(SURFACE)
+    fig.subplots_adjust(
+        left=0.06,
+        right=0.98,
+        top=1 - header / height,
+        bottom=footer / height,
+        wspace=0.12,
+        hspace=0.5,
+    )
+
+    name = " / ".join(PurePosixPath(kg).parts)
+    fig.text(
+        0.06,
+        1 - 0.3 / height,
+        f"{name}: metrics per relation" if name else "Metrics per relation",
+        color=INK,
+        fontsize=13,
+        fontweight="semibold",
+        va="top",
+    )
+    fig.text(
+        0.06,
+        1 - 0.68 / height,
+        "Head and tail predictions pooled, as in metrics_report.csv. "
+        "A missing column: the relation is not in that graph.",
+        color=INK_SECONDARY,
+        fontsize=9.5,
+        va="top",
+    )
+    fig.legend(
+        handles=[Patch(facecolor=colors[graph], label=graph) for graph in graphs],
+        loc="upper left",
+        bbox_to_anchor=(0.06, 1 - 1.0 / height),
+        ncols=len(graphs),
+        frameon=False,
+        fontsize=9,
+        labelcolor=INK_SECONDARY,
+        handlelength=0.9,
+        handleheight=0.9,
+        borderaxespad=0,
+        borderpad=0,
+    )
+
+    for row, model in zip(axes, models):
+        runs = report[report["model"] == model]
+        trained = [graph for graph in graphs if graph in set(runs["graph"])]
+        for ax, (column, label) in zip(row, metrics):
+            style_axes(ax)
+            series = [
+                (
+                    runs[runs["graph"] == graph]
+                    .set_index("relation")[column]
+                    .reindex(relations)
+                    .to_numpy(dtype=float),
+                    colors[graph],
+                )
+                for graph in trained
+            ]
+            draw_grouped_columns(ax, relations, series, top=1.05)
+            ax.set_yticks([0, 0.25, 0.5, 0.75, 1], ["0", "0.25", "0.5", "0.75", "1"])
+            ax.tick_params(axis="x", labelsize=8.5)
+            ax.set_title(
+                f"{model} · {label}",
+                loc="left",
+                color=INK,
+                fontsize=10.5,
+                fontweight="semibold",
+                pad=8,
+            )
 
     fig.savefig(path, dpi=PLOT_DPI, facecolor=SURFACE)
     plt.close(fig)
 
 
 def write_analysis(
-    root: Path, rows: list[dict], analysis_dir: Path, reference: str, patterns: list[str]
+    root: Path,
+    rows: list[dict],
+    analysis_dir: Path,
+    reference: str,
+    patterns: list[str],
 ) -> None:
     """Write the per-prediction analysis (see the module docstring) to `analysis_dir`."""
     predictions = build_predictions(root, rows)
@@ -662,8 +926,24 @@ def write_analysis(
     for name, table in tables.items():
         table.to_csv(analysis_dir / name, index=False)
         print(f"Wrote {len(table)} row(s) to {analysis_dir / name}")
+    for kg, report in split_dataset(tables["relation_report.csv"]).groupby("kg"):
+        graphs = graph_order(report["graph"], reference, patterns)
+        if len(graphs) > len(CATEGORICAL):
+            print(
+                f"warning: {kg} has {len(graphs)} graphs, the relation plot shows "
+                f"the first {len(CATEGORICAL)}"
+            )
+            graphs = graphs[: len(CATEGORICAL)]
+            report = report[report["graph"].isin(graphs)]
+        stem = "_".join(PurePosixPath(kg).parts + ("relations",))
+        plot = analysis_dir / f"{stem}.png"
+        plot_relations(report, graphs, plot)
+        print(f"Wrote {plot}")
     for (kg, compared, model), group in paired.groupby(["kg", "compared", "model"]):
-        plot = analysis_dir / f"{'_'.join(PurePosixPath(kg).parts + (compared, model))}.png"
+        plot = (
+            analysis_dir
+            / f"{'_'.join(PurePosixPath(kg).parts + (compared, model))}.png"
+        )
         plot_comparison(predictions, group, plot)
         print(f"Wrote {plot}")
 

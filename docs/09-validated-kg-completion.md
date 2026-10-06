@@ -168,6 +168,7 @@ PyGraft names its entities `E1`, `E2`, ..., so none of its queries pair with the
 | `relation_report.csv` | dataset, model and relation | The columns of `metrics_report.csv`, computed per relation |
 | `query_comparison.csv` | query paired between two graphs | The `query`, then for each graph (`reference_` and `compared_` columns): its number of held-out `answers`, their `mrr`, and the share of them in the top k (`hits_at_k`) |
 | `query_comparison_summary.csv` | comparison, model, group of queries and k | See the table below |
+| `<kg>_relations.png` | KG | `relation_report.csv` as a chart: one row of panels per model, MRR and Hits@10 per relation, and one column per graph. Each graph keeps its color in every plot: the reference first, then the compared graphs, then the rest (e.g. source, skgg_std=1, pygraft) |
 | `<kg>_<compared>_<model>.png` | comparison and model | Left: how the ranks of all test predictions of each graph spread over rank buckets. Right: for the paired queries, how each rank bucket of the reference graph spreads over the buckets of the compared graph |
 
 `query_comparison_summary.csv` has one row per group of queries and per k (1, 3, 5 and 10). There are three kinds of group:
