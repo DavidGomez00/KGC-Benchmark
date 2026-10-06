@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Collect Hits@k / MRR from pykeen results.json files and export them to CSV,
 then analyse every single test prediction behind those numbers.
@@ -48,7 +47,7 @@ Usage:
     python report_results.py
     python report_results.py --root Output --output Output/metrics_report.csv
     python report_results.py --reference source --compare "skgg*" --analysis-dir Output/prediction_analysis
-"""  # noqa: EXE001
+"""
 
 from __future__ import annotations
 
