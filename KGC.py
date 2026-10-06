@@ -195,7 +195,6 @@ def create_model(
             training_kwargs={
                 "num_epochs": n_epoch,
                 "use_tqdm_batch": True,
-                "drop_last": False,
                 "batch_size": batch_size,
             },
             # Runtime configuration

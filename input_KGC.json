@@ -1,7 +1,7 @@
 {
-  "kg_path": "../.data/french_royalty/pygraft/french_royalty.tsv",
-  "results_path": "Output/french_royalty/pygraft",
-  "models": ["TuckER","CompGCN"],
+  "kg_path": "../.data/french_royalty/fr.no-literals.tsv",
+  "results_path": "Output/french_royalty/source",
+  "models": ["TuckER", "TransE", "CompGCN"],
   "num_epochs": 100,
   "embedding_dim": 50,
   "batch_size": 32,
