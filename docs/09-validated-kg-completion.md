@@ -164,11 +164,13 @@ PyGraft names its entities `E1`, `E2`, ..., so none of its queries pair with the
 
 | File | One row per | Contents |
 |---|---|---|
-| `predictions.csv` | test prediction of every run | `side` (the entity predicted, `head` or `tail`), the test triple, `rank`, `reciprocal_rank`, and `hits_at_1` to `hits_at_10` (1 or 0) |
+| `predictions.csv` | test prediction of every run | `side` (the entity predicted, `head` or `tail`), the test triple, `rank`, `candidates` (the entities it was ranked among, after filtering), `reciprocal_rank`, and `hits_at_1` to `hits_at_10` (1 or 0) |
 | `relation_report.csv` | dataset, model and relation | The columns of `metrics_report.csv`, computed per relation |
+| `relation_comparison.csv` | KG, compared graph, model and relation | Each relation in the reference graph against every other graph, see [Comparing relations across graphs](#comparing-relations-across-graphs) |
 | `query_comparison.csv` | query paired between two graphs | The `query`, then for each graph (`reference_` and `compared_` columns): its number of held-out `answers`, their `mrr`, and the share of them in the top k (`hits_at_k`) |
 | `query_comparison_summary.csv` | comparison, model, group of queries and k | See the table below |
 | `<kg>_relations.png` | KG | `relation_report.csv` as a chart: one row of panels per model, MRR and Hits@10 per relation, and one column per graph. Each graph keeps its color in every plot: the reference first, then the compared graphs, then the rest (e.g. source, skgg_std=1, pygraft) |
+| `<kg>_<model>_hits_at_k.png` | KG and model | One panel per relation and one line per graph: the share of test predictions whose true answer ranks in the top k, for every k (its height at k = 1 and k = 10 is Hits@1 and Hits@10). Each panel lists the Cliff's delta of every graph against the reference, marked `n.s.` when not significant |
 | `<kg>_<compared>_<model>.png` | comparison and model | Left: how the ranks of all test predictions of each graph spread over rank buckets. Right: for the paired queries, how each rank bucket of the reference graph spreads over the buckets of the compared graph |
 
 `query_comparison_summary.csv` has one row per group of queries and per k (1, 3, 5 and 10). There are three kinds of group:
@@ -186,6 +188,29 @@ PyGraft names its entities `E1`, `E2`, ..., so none of its queries pair with the
 | `compared_accurate_when_reference_accurate` | Share of the queries accurate in the reference graph that are also accurate in the compared graph. |
 | `compared_accurate_when_reference_inaccurate` | The same share among the queries the reference graph gets wrong. The gap between these two shares shows how much accuracy in one graph predicts accuracy in the other. |
 | `cohen_kappa` | Agreement on accurate versus inaccurate, corrected for chance. 1 means the graphs always agree, 0 means no better than chance, and a negative value means worse than chance. |
+
+### Comparing relations across graphs
+
+`relation_comparison.csv` asks, for each relation and model: **are the ranks in another graph distributed differently from the reference graph's?** It differs from the paired-query comparison in two ways:
+
+- It uses every test prediction of the relation in each graph, not only the queries held out in both.
+- It needs no shared entities, so it compares the reference with every other graph of the KG, PyGraft included. A relation is compared when both graphs have it; `type` exists only in PyGraft's graph, so it is not compared.
+
+The graphs have different numbers of entities (PyGraft 1,089, source 2,038), so a raw rank of 500 is a random guess in one and above random in the other (see [Comparing metrics across graphs](#comparing-metrics-across-graphs)). The distribution tests therefore use the **normalized rank** `(rank − 1) / (candidates − 1)`: 0 means ranked first, 1 means ranked last, and a random guess averages 0.5. PyKEEN's AMRI (`adjusted_arithmetic_mean_rank_index`) is 1 − 2 × their mean, when every query has the same number of candidates.
+
+| Column | Meaning |
+|---|---|
+| `reference_predictions`, `compared_predictions` | Number of test predictions of the relation in each graph. |
+| `reference_mrr`, `compared_mrr`, `mrr_difference` | MRR of the relation in each graph, and compared minus reference. |
+| `mrr_difference_low`, `mrr_difference_high` | 95% bootstrap interval of `mrr_difference` (2,000 resamples of each graph's predictions, fixed seed). An interval without 0 means the MRR difference is unlikely to be chance. |
+| `reference_hits_at_10`, `compared_hits_at_10` | Hits@10 of the relation in each graph. |
+| `cliffs_delta` | The chance that a prediction of the compared graph ranks better than one of the reference graph, minus the reverse, on normalized ranks. From −1 (the compared graph always ranks worse) to +1 (always better); 0 means neither tends to rank better. |
+| `effect` | The size of `cliffs_delta`: negligible below 0.147, small below 0.33, medium below 0.474, large above (Romano et al., 2006). |
+| `mannwhitney_p` | Mann-Whitney U test: does one graph tend to rank better than the other? |
+| `ks_statistic`, `ks_p` | Kolmogorov-Smirnov test: do the two rank distributions differ in any way, including in shape? The statistic is the largest gap between their Hits@k curves (on normalized ranks). |
+| `mannwhitney_p_holm`, `ks_p_holm` | The p-values after a Holm correction over the relations of the same graph pair and model. Use these to decide significance. |
+
+The bootstrap interval and the tests can disagree. The interval is about the mean of the reciprocal ranks, which only the top of the ranking moves. The tests weigh every prediction, wherever it ranks. A relation can therefore gain MRR in a few top-ranked predictions while its distribution as a whole does not change significantly.
 
 ## Requirements
 

@@ -33,13 +33,21 @@ that keep its entity names. They share no test triples with it  so
 predictions are paired by query: a tail query `(h, r, ?)` or a head query
 `(?, r, t)` held out in both graphs, each graph
 ranking its own held-out answers. PyGraft renames every entity, so its
-queries never pair. The analysis is written to `--analysis-dir`:
+queries never pair.
+
+Each relation is also compared between the reference and every other graph
+of its KG, PyGraft included, over all the relation's test predictions: the
+difference in MRR, and tests and an effect size for the rank distributions.
+
+The analysis is written to `--analysis-dir`:
 
     predictions.csv                  one row per test prediction, every run
     relation_report.csv              the table's metrics per relation
+    relation_comparison.csv          each relation's ranks, reference vs every graph
     query_comparison.csv             one row per query paired between two graphs
     query_comparison_summary.csv     correlation and agreement per stratum and k
     <kg>_relations.png               MRR and Hits@10 per relation, model and graph
+    <kg>_<model>_hits_at_k.png       Hits@k curves per relation, one line per graph
     <kg>_<compared>_<model>.png      rank distributions and rank transitions
 
 Usage:
@@ -64,10 +72,11 @@ import torch
 from matplotlib import path as mpath
 from matplotlib import pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, to_rgb
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, PathPatch
 from matplotlib.ticker import PercentFormatter
 from pykeen.triples import TriplesFactory
-from scipy.stats import spearmanr
+from scipy.stats import ks_2samp, mannwhitneyu, spearmanr
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_ROOT = SCRIPT_DIR / "Output"
@@ -111,6 +120,15 @@ ACCURATE_SHARE = 0.5
 MRR_TOLERANCE = 1e-3
 # Test triples scored per forward pass when recomputing ranks.
 SCORE_BATCH_SIZE = 256
+# Resamples of the bootstrap interval of each relation's MRR difference, with
+# a fixed seed so that reruns write identical files.
+BOOTSTRAP_SAMPLES = 2000
+BOOTSTRAP_SEED = 0
+# Holm-adjusted p-values below this are significant in the plots.
+SIGNIFICANCE = 0.05
+# Upper bounds of |Cliff's delta| for each effect size label (Romano et al.,
+# 2006); anything above the last bound is "large".
+EFFECT_SIZES = [(0.147, "negligible"), (0.33, "small"), (0.474, "medium")]
 
 PREDICTION_COLUMNS = [
     "dataset",
@@ -120,6 +138,7 @@ PREDICTION_COLUMNS = [
     "relation",
     "tail",
     "rank",
+    "candidates",
     "reciprocal_rank",
     *HITS_COLUMNS,
 ]
@@ -251,9 +270,11 @@ def rank_predictions(dataset_dir: Path, model_dir: Path) -> pd.DataFrame | None:
     are removed before ranking, and ties get the "realistic" rank: the mean
     of the best and worst position among equal scores.
 
-    Returns one row per prediction (side, head, relation, tail, rank), where
-    `side` is the entity being predicted, or None (and prints a warning) if
-    a file is missing or the test labels aren't in the model's vocabulary.
+    Returns one row per prediction (side, head, relation, tail, rank,
+    candidates), where `side` is the entity being predicted and `candidates`
+    the number of entities it was ranked among (all but the filtered
+    answers, pykeen's "number of options"), or None (and prints a warning)
+    if a file is missing or the test labels aren't in the model's vocabulary.
     """
     needed = [
         dataset_dir / "test",
@@ -292,10 +313,10 @@ def rank_predictions(dataset_dir: Path, model_dir: Path) -> pd.DataFrame | None:
         model_dir / "trained_model.pkl", map_location="cpu", weights_only=False
     )
     model.eval()
-    ranks = {}
+    ranks, candidates = {}, {}
     with torch.inference_mode():
         for side, column in (("head", 0), ("tail", 2)):
-            side_ranks = []
+            side_ranks, side_candidates = [], []
             for batch in torch.split(test_ids, SCORE_BATCH_SIZE):
                 scores = model.predict(hrt_batch=batch, target=side)
                 rows = torch.arange(len(batch))
@@ -309,7 +330,9 @@ def rank_predictions(dataset_dir: Path, model_dir: Path) -> pd.DataFrame | None:
                 better = (scores > true_scores[:, None]).sum(dim=1)
                 not_worse = (scores >= true_scores[:, None]).sum(dim=1)
                 side_ranks.append((better + 1 + not_worse) / 2)
+                side_candidates.append(torch.isfinite(scores).sum(dim=1))
             ranks[side] = torch.cat(side_ranks).double().numpy()
+            candidates[side] = torch.cat(side_candidates).numpy()
 
     return pd.concat(
         [
@@ -320,6 +343,7 @@ def rank_predictions(dataset_dir: Path, model_dir: Path) -> pd.DataFrame | None:
                     "relation": test[:, 1],
                     "tail": test[:, 2],
                     "rank": ranks[side],
+                    "candidates": candidates[side],
                 }
             )
             for side in ("head", "tail")
@@ -533,6 +557,118 @@ def summarize_comparison(paired: pd.DataFrame) -> pd.DataFrame:
                     }
                 )
     return pd.DataFrame(rows)
+
+
+def normalized_rank(predictions: pd.DataFrame) -> pd.Series:
+    """
+    The rank as a share of the candidates, (rank - 1) / (candidates - 1): 0
+    when ranked first, 1 when ranked last, 0.5 on average for a random
+    guess. It puts graphs with different numbers of entities on one scale.
+    """
+    return (predictions["rank"] - 1) / (predictions["candidates"] - 1)
+
+
+def holm(p_values: pd.Series) -> pd.Series:
+    """Holm-adjust one family of p-values (step-down, capped at 1)."""
+    ordered = p_values.sort_values()
+    adjusted = (ordered * np.arange(len(ordered), 0, -1)).cummax().clip(upper=1)
+    return adjusted.reindex(p_values.index)
+
+
+def effect_size(delta: float) -> str:
+    """Label the size of a Cliff's delta: negligible, small, medium or large."""
+    for bound, label in EFFECT_SIZES:
+        if abs(delta) < bound:
+            return label
+    return "large"
+
+
+def bootstrap_difference(
+    x: pd.Series, y: pd.Series, rng: np.random.Generator
+) -> tuple[float, float]:
+    """95% percentile bootstrap interval of mean(y) - mean(x), resampling each."""
+    x, y = x.to_numpy(), y.to_numpy()
+    means_x = x[rng.integers(0, len(x), (BOOTSTRAP_SAMPLES, len(x)))].mean(axis=1)
+    means_y = y[rng.integers(0, len(y), (BOOTSTRAP_SAMPLES, len(y)))].mean(axis=1)
+    low, high = np.percentile(means_y - means_x, [2.5, 97.5])
+    return float(low), float(high)
+
+
+def compare_relations(predictions: pd.DataFrame, reference: str) -> pd.DataFrame:
+    """
+    Compare each relation's test predictions in the reference graph with
+    those in every other graph of the same KG (`predictions` with the `kg`
+    and `graph` columns of `split_dataset`), for each model trained on both.
+    Unlike `compare_queries`, this needs no shared entities, so PyGraft is
+    compared too, and it uses every test prediction.
+
+    `mrr_difference` (compared - reference) comes with a 95% bootstrap
+    interval. The rank distributions are compared on `normalized_rank`:
+    Cliff's delta is P(compared ranks better) - P(reference ranks better),
+    negative when the compared graph does worse; the Mann-Whitney test asks
+    whether one graph tends to rank better, the KS test whether the
+    distributions differ at all. Their p-values are Holm-adjusted over the
+    relations of each graph pair and model.
+    """
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    k = max(HITS_AT)
+    predictions = predictions.assign(normalized_rank=normalized_rank(predictions))
+    rows = []
+    for (kg, model), runs in predictions.groupby(["kg", "model"]):
+        ref = runs[runs["graph"] == reference]
+        for compared, cmp in runs[runs["graph"] != reference].groupby("graph"):
+            for relation in sorted(set(ref["relation"]) & set(cmp["relation"])):
+                x = ref[ref["relation"] == relation]
+                y = cmp[cmp["relation"] == relation]
+                # U counts the pairs where the reference ranks further down
+                # than the compared graph, i.e. where the compared one is better.
+                mann_whitney = mannwhitneyu(
+                    x["normalized_rank"], y["normalized_rank"], alternative="two-sided"
+                )
+                ks = ks_2samp(x["normalized_rank"], y["normalized_rank"])
+                delta = 2 * mann_whitney.statistic / (len(x) * len(y)) - 1
+                low, high = bootstrap_difference(
+                    x["reciprocal_rank"], y["reciprocal_rank"], rng
+                )
+                rows.append(
+                    {
+                        "kg": kg,
+                        "reference": reference,
+                        "compared": compared,
+                        "model": model,
+                        "relation": relation,
+                        "reference_predictions": len(x),
+                        "compared_predictions": len(y),
+                        "reference_mrr": x["reciprocal_rank"].mean(),
+                        "compared_mrr": y["reciprocal_rank"].mean(),
+                        "mrr_difference": (
+                            y["reciprocal_rank"].mean() - x["reciprocal_rank"].mean()
+                        ),
+                        "mrr_difference_low": low,
+                        "mrr_difference_high": high,
+                        f"reference_hits_at_{k}": x[f"hits_at_{k}"].mean(),
+                        f"compared_hits_at_{k}": y[f"hits_at_{k}"].mean(),
+                        "cliffs_delta": delta,
+                        "effect": effect_size(delta),
+                        "mannwhitney_p": mann_whitney.pvalue,
+                        "ks_statistic": ks.statistic,
+                        "ks_p": ks.pvalue,
+                    }
+                )
+    if not rows:
+        return pd.DataFrame(
+            columns=["kg", "reference", "compared", "model", "relation"]
+        )
+
+    comparison = pd.DataFrame(rows)
+    for test in ("mannwhitney", "ks"):
+        family_p = comparison.groupby(["kg", "compared", "model"])[f"{test}_p"]
+        comparison.insert(
+            comparison.columns.get_loc(f"{test}_p") + 1,
+            f"{test}_p_holm",
+            family_p.transform(holm),
+        )
+    return comparison
 
 
 def rank_buckets(ranks: pd.Series) -> pd.Series:
@@ -894,6 +1030,170 @@ def plot_relations(report: pd.DataFrame, graphs: list[str], path: Path) -> None:
     plt.close(fig)
 
 
+def delta_note(comparison: pd.DataFrame, graphs: list[str]) -> str:
+    """
+    One line with the Cliff's delta of every graph against the reference,
+    from one relation's `compare_relations` rows, in the order of `graphs`,
+    e.g. "δ vs source: skgg_std=1 −0.72, pygraft −0.95 n.s.", where n.s.
+    marks a Holm-adjusted Mann-Whitney p of SIGNIFICANCE or more.
+    """
+    if comparison.empty:
+        return ""
+    rows = comparison.set_index("compared")
+    entries = []
+    for graph in graphs:
+        if graph in rows.index:
+            row = rows.loc[graph]
+            delta = f"{row['cliffs_delta']:+.2f}".replace("-", "−")
+            significant = row["mannwhitney_p_holm"] < SIGNIFICANCE
+            entries.append(f"{graph} {delta}" + ("" if significant else " n.s."))
+    return f"δ vs {comparison['reference'].iat[0]}: " + ", ".join(entries)
+
+
+def plot_hits_curves(
+    predictions: pd.DataFrame,
+    comparison: pd.DataFrame,
+    graphs: list[str],
+    reference: str,
+    path: Path,
+) -> None:
+    """
+    Plot the Hits@k curves of one KG and model (`predictions` holds only its
+    rows, with the `kg` and `graph` columns of `split_dataset`): one panel
+    per relation and one line per graph, giving the share of predictions
+    ranked within the top k for every k, so the height at k = 1 and k = 10
+    is Hits@1 and Hits@10. Lines are colored in the order of `graphs`. Each
+    panel lists the Cliff's deltas against the reference from `comparison`,
+    the `compare_relations` rows of this KG and model.
+    """
+    kg, model = predictions["kg"].iat[0], predictions["model"].iat[0]
+    relations = sorted(predictions["relation"].unique())
+    colors = dict(zip(graphs, CATEGORICAL))
+    trained = [graph for graph in graphs if graph in set(predictions["graph"])]
+    k_max = predictions["candidates"].max()
+
+    # Heights in inches: the header, one row per 4 relations, the bottom axis.
+    columns = 4
+    rows = -(-len(relations) // columns)
+    header, row_height, footer = 2.0, 2.7, 0.6
+    height = header + row_height * rows + footer
+    fig, axes = plt.subplots(
+        rows, columns, figsize=(13, height), dpi=PLOT_DPI, squeeze=False
+    )
+    fig.patch.set_facecolor(SURFACE)
+    fig.subplots_adjust(
+        left=0.06,
+        right=0.98,
+        top=1 - header / height,
+        bottom=footer / height,
+        wspace=0.18,
+        hspace=0.45,
+    )
+
+    fig.text(
+        0.06,
+        1 - 0.3 / height,
+        f"{' / '.join(PurePosixPath(kg).parts + (model,))}: Hits@k per relation",
+        color=INK,
+        fontsize=13,
+        fontweight="semibold",
+        va="top",
+    )
+    subtitle = (
+        "Share of test predictions whose true answer ranks in the top k: "
+        "the height at k = 1 and k = 10 is Hits@1 and Hits@10."
+    )
+    if not comparison.empty:
+        subtitle += (
+            f"\nδ: Cliff's delta against {reference} on candidate-normalized ranks, "
+            "negative when the graph does worse; n.s.: Holm-adjusted Mann-Whitney "
+            f"p ≥ {SIGNIFICANCE}."
+        )
+    fig.text(
+        0.06,
+        1 - 0.68 / height,
+        subtitle,
+        color=INK_SECONDARY,
+        fontsize=9.5,
+        va="top",
+        linespacing=1.5,
+    )
+    fig.legend(
+        handles=[
+            Line2D([], [], color=colors[graph], linewidth=2 * PX, label=graph)
+            for graph in trained
+        ],
+        loc="upper left",
+        bbox_to_anchor=(0.06, 1 - 1.3 / height),
+        ncols=len(trained),
+        frameon=False,
+        fontsize=9,
+        labelcolor=INK_SECONDARY,
+        handlelength=1.6,
+        borderaxespad=0,
+        borderpad=0,
+    )
+
+    for i, ax in enumerate(axes.flat):
+        if i >= len(relations):
+            ax.set_visible(False)
+            continue
+        relation = relations[i]
+        style_axes(ax)
+        runs = predictions[predictions["relation"] == relation]
+        # The reference graph last, so that its line is drawn on top.
+        for graph in reversed(trained):
+            ranks = runs.loc[runs["graph"] == graph, "rank"].to_numpy()
+            if len(ranks) == 0:
+                continue
+            values, counts = np.unique(ranks, return_counts=True)
+            shares = np.cumsum(counts) / len(ranks)
+            if values[0] > 1:  # no answer ranked first, so the curve starts at 0
+                values, shares = np.r_[1, values], np.r_[0, shares]
+            ax.step(
+                np.r_[values, k_max],
+                np.r_[shares, 1],
+                where="post",
+                color=colors[graph],
+                linewidth=2 * PX,
+                solid_joinstyle="round",
+                solid_capstyle="round",
+            )
+        ax.set_xscale("log")
+        ax.minorticks_off()
+        ax.set_xlim(1, k_max)
+        ax.set_ylim(0, 1.02)
+        ax.set_xticks([1, 10, 100, 1000], ["1", "10", "100", "1,000"])
+        ax.set_yticks([0, 0.25, 0.5, 0.75, 1], ["0", "0.25", "0.5", "0.75", "1"])
+        ax.grid(color=GRIDLINE, linewidth=PX)
+        ax.set_axisbelow(True)
+        ax.spines["bottom"].set(visible=True, color=BASELINE, linewidth=PX)
+        ax.set_title(
+            relation,
+            loc="left",
+            color=INK,
+            fontsize=10.5,
+            fontweight="semibold",
+            pad=20,
+        )
+        ax.text(
+            0,
+            1.03,
+            delta_note(comparison[comparison["relation"] == relation], graphs),
+            transform=ax.transAxes,
+            color=INK_SECONDARY,
+            fontsize=8,
+            va="bottom",
+        )
+        if i % columns == 0:
+            ax.set_ylabel("Share ranked ≤ k", color=INK_SECONDARY, fontsize=9.5)
+        if i + columns >= len(relations):  # no panel below this one
+            ax.set_xlabel("Rank threshold k", color=INK_SECONDARY, fontsize=9.5)
+
+    fig.savefig(path, dpi=PLOT_DPI, facecolor=SURFACE)
+    plt.close(fig)
+
+
 def write_analysis(
     root: Path,
     rows: list[dict],
@@ -907,11 +1207,17 @@ def write_analysis(
         print("warning: no run could be ranked, so no prediction analysis was written")
         return
 
+    runs = split_dataset(predictions)
+    relation_comparison = compare_relations(runs, reference)
     paired = compare_queries(query_table(predictions), reference, patterns)
     tables = {
         "predictions.csv": predictions,
         "relation_report.csv": relation_report(predictions),
     }
+    if relation_comparison.empty:
+        print(f"note: no KG has a '{reference}' graph, so no relations were compared")
+    else:
+        tables["relation_comparison.csv"] = relation_comparison
     if paired.empty:
         print(
             f"note: no query is held out in both '{reference}' and a sibling dataset matching "
@@ -925,19 +1231,31 @@ def write_analysis(
     for name, table in tables.items():
         table.to_csv(analysis_dir / name, index=False)
         print(f"Wrote {len(table)} row(s) to {analysis_dir / name}")
-    for kg, report in split_dataset(tables["relation_report.csv"]).groupby("kg"):
-        graphs = graph_order(report["graph"], reference, patterns)
+    reports = split_dataset(tables["relation_report.csv"])
+    for kg, kg_runs in runs.groupby("kg"):
+        # One graph order per KG, so that each graph keeps its color in every plot.
+        graphs = graph_order(kg_runs["graph"], reference, patterns)
         if len(graphs) > len(CATEGORICAL):
             print(
-                f"warning: {kg} has {len(graphs)} graphs, the relation plot shows "
+                f"warning: {kg} has {len(graphs)} graphs, the relation plots show "
                 f"the first {len(CATEGORICAL)}"
             )
             graphs = graphs[: len(CATEGORICAL)]
-            report = report[report["graph"].isin(graphs)]
         stem = "_".join(PurePosixPath(kg).parts + ("relations",))
         plot = analysis_dir / f"{stem}.png"
+        report = reports[(reports["kg"] == kg) & reports["graph"].isin(graphs)]
         plot_relations(report, graphs, plot)
         print(f"Wrote {plot}")
+        shown = kg_runs[kg_runs["graph"].isin(graphs)]
+        for model, model_runs in shown.groupby("model"):
+            stem = "_".join(PurePosixPath(kg).parts + (model, "hits_at_k"))
+            plot = analysis_dir / f"{stem}.png"
+            deltas = relation_comparison[
+                (relation_comparison["kg"] == kg)
+                & (relation_comparison["model"] == model)
+            ]
+            plot_hits_curves(model_runs, deltas, graphs, reference, plot)
+            print(f"Wrote {plot}")
     for (kg, compared, model), group in paired.groupby(["kg", "compared", "model"]):
         plot = (
             analysis_dir
