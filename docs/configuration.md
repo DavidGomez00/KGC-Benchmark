@@ -16,6 +16,6 @@ paths in it are relative to the directory KGC.py runs from, normally the reposit
 | `filtered_negative_sampling` | true | Filter true triples out of negative samples. |
 | `save_splits` | true | Write `train` and `test` files to `results_path`. `report_results.py` needs `test` for its per-prediction analysis. |
 | `log_level` | `INFO` | Python logging level. |
-| `hpo` | false | Search each model's hyperparameters before training it. See [09](kgc.md#hyperparameter-optimization). |
+| `hpo` | false | Search each model's hyperparameters before training it. See [Hyperparameter optimization](kgc.md#hyperparameter-optimization). |
 | `n_trials` | 30 | With `hpo`: number of trials per model. |
 | `validation_ratio` | 0.1 | With `hpo`: share of the training split held out to score the trials. |

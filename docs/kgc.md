@@ -27,26 +27,19 @@ It reads `input.json` (see [configuration](configuration.md)) and:
 4. For every model in `models`: trains it on the training split with PyKEEN's `pipeline` using the sLCWA training loop, the configured embedding size, batch size and epochs, and optionally filtered negative sampling.
 5. Saves the pipeline results to `<results_path>/<model>/` and a `loss_plot.png` next to them.
 
-Example configuration:
+Example configuration, training every model on the PyGraft version of the French royalty KG:
 
 ```json
 {
-  "kg_path": "data/YAGO3-10/TransformedKG/TransformedKG_YAGO3-10.tsv",
-  "results_path": "data/YAGO3-10/TransformedKG",
-  "models": ["TuckER"],
-  "num_epochs": 100,
-  "embedding_dim": 50,
+  "kg_path": ".data/french_royalty/pygraft/french_royalty.pygraft.tsv",
+  "results_path": "Output/french_royalty/pygraft",
+  "models": ["TransE", "TransH", "TransD", "RotatE", "ComplEx", "TuckER", "CompGCN"],
   "batch_size": 32,
-  "random_seed": 1235,
-  "create_inverse_triples": false,
-  "filtered_negative_sampling": true,
-  "save_splits": true,
-  "log_level": "INFO",
-  "hpo": false,
-  "n_trials": 30,
-  "validation_ratio": 0.1
+  "create_inverse_triples": true
 }
 ```
+
+Every key left out takes its default (see [configuration](configuration.md)).
 
 ### Hyperparameter optimization
 
@@ -82,7 +75,7 @@ The models used so far are TransE, TransH, TransD, RotatE, ComplEx, TuckER and C
 ```bash
 python report_results.py                                         # source vs every skgg* folder
 python report_results.py --root Output --output Output/metrics_report.csv
-python report_results.py --reference source --compare "skgg_std=*"
+python report_results.py --reference source --compare "skgg.std=*"
 ```
 
 ### Folder layout
@@ -194,7 +187,7 @@ KGC.py writes `train` and `test` before it trains the models. While it is retrai
 
 ### Pairing predictions between graphs
 
-The comparison answers one question: **when a prediction is accurate in one graph, is it also accurate in the other?** It compares a reference graph (`--reference`, default `source`) with every sibling folder that matches `--compare` (default `skgg*`, e.g. `skgg_std=1`). Only models trained on both graphs are compared.
+The comparison answers one question: **when a prediction is accurate in one graph, is it also accurate in the other?** It compares a reference graph (`--reference`, default `source`) with every sibling folder that matches `--compare` (default `skgg*`, e.g. `skgg.std=1.filled`). Only models trained on both graphs are compared.
 
 These graphs share no test triples, even when one is generated from the other. SKGG keeps each entity's relations but rewires their targets: `Marie_Antoinette` keeps her 3 `child` triples, but with different children. Each graph is also split on its own. Predictions are therefore paired by **query**:
 
@@ -214,7 +207,7 @@ PyGraft names its entities `E1`, `E2`, ..., so none of its queries pair with the
 | `relation_comparison.csv` | KG, compared graph, model and relation | Each relation in the reference graph against every other graph, see [Comparing relations across graphs](#comparing-relations-across-graphs) |
 | `query_comparison.csv` | query paired between two graphs | The `query`, then for each graph (`reference_` and `compared_` columns): its number of held-out `answers`, their `mrr`, and the share of them in the top k (`hits_at_k`) |
 | `query_comparison_summary.csv` | comparison, model, group of queries and k | See the table below |
-| `<kg>_relations.png` | KG | `relation_report.csv` as a chart: one row of panels per model, MRR and Hits@10 per relation, and one column per graph. Each graph keeps its color in every plot: the reference first, then the compared graphs, then the rest (e.g. source, skgg_std=1, pygraft) |
+| `<kg>_relations.png` | KG | `relation_report.csv` as a chart: one row of panels per model, MRR and Hits@10 per relation, and one column per graph. Each graph keeps its color in every plot: the reference first, then the compared graphs, then the rest (e.g. source, skgg.std=1.filled, pygraft) |
 | `<kg>_<model>_hits_at_k.png` | KG and model | One panel per relation and one line per graph: the share of test predictions whose true answer ranks in the top k, for every k (its height at k = 1 and k = 10 is Hits@1 and Hits@10). Each panel lists the Cliff's delta of every graph against the reference, marked `n.s.` when not significant |
 | `<kg>_<compared>_<model>.png` | comparison and model | Left: how the ranks of all test predictions of each graph spread over rank buckets. Right: for the paired queries, how each rank bucket of the reference graph spreads over the buckets of the compared graph |
 
@@ -259,4 +252,4 @@ The bootstrap interval and the tests can disagree. The interval is about the mea
 
 ## Requirements
 
-`torch`, `pykeen`, `pandas`, `numpy`, `scipy` and `matplotlib`. See [Installation](../README.md#installation).
+`torch`, `pykeen`, `pandas`, `numpy`, `scipy` and `matplotlib`. See [Quick start](../README.md#quick-start).

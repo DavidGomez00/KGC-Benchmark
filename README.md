@@ -1,89 +1,113 @@
 # KGC-Benchmark
 
-Train knowledge graph embedding models on one or more graphs with [PyKEEN](https://pykeen.readthedocs.io/),
-and compare how well each graph supports link prediction: overall, per relation, and query by query.
+Find out how well a knowledge graph supports link prediction. KGC-Benchmark trains knowledge graph embedding
+models on your graph with [PyKEEN](https://pykeen.readthedocs.io/) and reports Hits@k and MRR. When you have
+several versions of a graph, it shows which version predicts better, relation by relation and query by query.
 
-```
-KGC-Benchmark/
-├── KGC.py               Train and evaluate models, optionally after hyperparameter optimization
-├── input.json           Configuration for KGC.py
-├── report_results.py    Collect Hits@k and MRR into one CSV and analyse every test prediction
-└── docs/                Documentation
-```
-
-## Installation
+## Quick start
 
 ```bash
+# 1. Install
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+# 2. Point input.json at your graph (see below), then train and evaluate
+python KGC.py
+
+# 3. Collect the results of every run into one table, with plots
+python report_results.py
 ```
 
-A CUDA-capable GPU speeds up training, but is not required.
+Run every command from the repository root. A CUDA GPU makes training faster, but you don't need one.
 
-## Usage
+## Your graph
 
-All commands run from the repository root.
+A graph is a tab-separated file with one triple per line: head, relation and tail.
 
-1. **Configure** `input.json`: the graph to train on (`kg_path`, a tab-separated file of triples), where to
-   save the results (`results_path`), the models and their hyperparameters.
+```
+E2082	successor	E2102
+E1959	predecessor	E150
+E1339	spouse	E1690
+```
 
-   ```json
-   {
-     "kg_path": ".data/french_royalty/french_royalty.tsv",
-     "results_path": "Output/french_royalty/source",
-     "models": ["TransE", "TuckER", "CompGCN"],
-     "num_epochs": 100,
-     "embedding_dim": 50,
-     "batch_size": 32,
-     "random_seed": 1235,
-     "create_inverse_triples": false,
-     "filtered_negative_sampling": true,
-     "save_splits": true,
-     "log_level": "INFO",
-     "hpo": false,
-     "n_trials": 30,
-     "validation_ratio": 0.1
-   }
-   ```
+Graphs in N-Triples or another RDF format have to be converted to this format first.
 
-   Set `"hpo": true` to search each model's hyperparameters (`n_trials` trials, scored on a validation set
-   holding `validation_ratio` of the training triples) and train it with the best ones.
+## Configuring a run
 
-2. **Train and evaluate** the models:
+`KGC.py` reads its settings from `input.json`. Only two keys are required:
 
-   ```bash
-   python KGC.py
-   ```
+```json
+{
+  "kg_path": ".data/french_royalty/source/french_royalty.tsv",
+  "results_path": "Output/french_royalty/source"
+}
+```
 
-   Repeat for each graph, with its own `results_path` under a common folder (e.g.
-   `Output/french_royalty/source`, `Output/french_royalty/skgg.std=1.filled`).
+Add a key only when you want to change its default:
 
-3. **Collect and analyse** the results:
+| Key | Default | What it does |
+|---|---|---|
+| `kg_path` | *required* | The graph to train on |
+| `results_path` | *required* | The folder to save the splits, trained models and plots in |
+| `models` | `["TransE", "TransH", "TransD", "ComplEx", "RotatE", "TuckER"]` | The [PyKEEN models](https://pykeen.readthedocs.io/en/stable/reference/models.html) to train |
+| `num_epochs` | `100` | Training epochs |
+| `embedding_dim` | `50` | Embedding size |
+| `batch_size` | `1024` | Training batch size |
+| `create_inverse_triples` | `false` | Add an inverse of every relation. **CompGCN requires `true`.** |
+| `hpo` | `false` | Tune each model's hyperparameters before training it (see below) |
 
-   ```bash
-   python report_results.py
-   ```
+[docs/configuration.md](docs/configuration.md) lists every key, including the random seed and the logging
+level.
 
-   It writes `Output/metrics_report.csv` (Hits@1/3/5/10 and MRR, one row per graph and model) and
-   `Output/prediction_analysis/`: the rank of every test prediction, the metrics per relation, and a
-   comparison of a reference graph (`--reference`, default `source`) with the other graphs of its KG,
-   relation by relation and query by query (`--compare`, default `skgg*`), with plots. The graphs are
-   compared with a bootstrap interval of the MRR difference, Cliff's delta, Mann-Whitney and
-   Kolmogorov-Smirnov tests, and, for queries held out in both graphs, Spearman's rank correlation and
-   Cohen's kappa.
+### Tuning hyperparameters
+
+With `"hpo": true`, KGC.py searches each model's embedding size, batch size and other hyperparameters, then
+trains the model with the best ones. In this mode, `embedding_dim` and `batch_size` are ignored. Two more keys
+control the search:
+
+| Key | Default | What it does |
+|---|---|---|
+| `n_trials` | `30` | Hyperparameter combinations tried per model |
+| `validation_ratio` | `0.1` | Share of the training triples held out to score each combination |
+
+The test split is the same with and without HPO, so the results of both modes can be compared.
+
+## Comparing several graphs
+
+Run `KGC.py` once per graph. Give each run its own `results_path`, with all the versions of a graph in one
+shared folder:
+
+```
+Output/
+└── french_royalty/
+    ├── source/              ← the original graph (the reference)
+    ├── skgg.std=1.filled/   ← a version to compare with it
+    └── pygraft/
+```
+
+Then run `python report_results.py`. It writes:
+
+- **`Output/metrics_report.csv`**: Hits@1, 3, 5 and 10 and MRR, with one row per graph and model.
+- **`Output/prediction_analysis/`**: the rank of every test prediction, the metrics per relation, and plots
+  comparing the reference graph with the other versions.
+
+By default, the reference is the folder named `source` and it is compared query by query with the folders
+matching `skgg*`. You can change both settings:
+
+```bash
+python report_results.py --reference source --compare "skgg*"
+python report_results.py --help    # all options
+```
 
 ## Documentation
 
 | Page | Contents |
 |---|---|
-| [KG completion and evaluation](docs/kgc.md) | What KGC.py and report_results.py do, the metrics, the output files and the statistics |
+| [KG completion and evaluation](docs/kgc.md) | How the scripts work, the metrics, the output files and the statistical tests |
 | [Configuration](docs/configuration.md) | Every key of `input.json` |
 | [Troubleshooting](docs/troubleshooting.md) | The messages the scripts print, and what to do about them |
 
 ## Origin and license
 
-This project started as the KG completion part of [VANILLA](https://github.com/SDM-TIB/VANILLA), developed by
-the Scientific Data Management Group at TIB by Disha Purohit and Yashrajsinh Chudasama, supervised by
-Maria-Esther Vidal. Its history was carried over from that repository. It is distributed under the MIT
-license in [LICENSE.txt](LICENSE.txt).
+This project started as the KG completion part of [VANILLA](https://github.com/SDM-TIB/VANILLA), developed by the Scientific Data Management Group at TIB by Disha Purohit and Yashrajsinh Chudasama, supervised by Maria-Esther Vidal. Its history was carried over from that repository.
