@@ -1,11 +1,10 @@
-# 09 - Validated KG completion
+# KG completion and evaluation
 
-`Completion/` measures what normalization does for link prediction. It trains knowledge graph
-embedding models with [PyKEEN](https://pykeen.readthedocs.io/) on a graph (typically the normalized KG from
-part 1) and reports standard link-prediction metrics.
+KGC-Benchmark trains knowledge graph embedding models with [PyKEEN](https://pykeen.readthedocs.io/) on one
+or more graphs, reports standard link-prediction metrics, and compares the graphs prediction by prediction.
 
 ```
-Completion/
+KGC-Benchmark/
 ├── KGC.py               Train and evaluate models, optionally after hyperparameter optimization
 ├── input.json           Configuration for KGC.py
 └── report_results.py    Collect Hits@k and MRR into one CSV and analyse every test prediction
@@ -13,15 +12,14 @@ Completion/
 
 ## Input
 
-`KGC.py` reads a **tab-separated** `.tsv` file of triples. The normalization pipeline writes N-Triples, so the normalized `.nt` must be converted to TSV first. Some benchmarks in the repository already have a `.tsv` beside the `.nt` (e.g., `Output/SGKG/transformed/SGKG_normalized.tsv`).
+`KGC.py` reads a **tab-separated** `.tsv` file of triples: one triple per line, head, relation and tail separated by tabs. A graph in N-Triples or another RDF format must be converted to TSV first.
 
 ## KGC.py
 ```bash
-cd Completion
 python KGC.py
 ```
 
-It reads `input.json` (see [03](03-configuration.md#completioninputjson)) and:
+It reads `input.json` (see [configuration](configuration.md)) and:
 
 1. Loads the `.tsv` into a PyKEEN `TriplesFactory`.
 2. Splits it into training (80%) and testing (20%) sets.
@@ -66,20 +64,13 @@ With `"hpo": true`, KGC.py searches each model's hyperparameters before step 4, 
 4. Trains the model with the best trial's hyperparameters on the **whole** training split and saves it like a
    run without HPO (step 5), so `report_results.py` reads it too.
 
-## Comparing the effect of normalization
+## Comparing graphs
 
-To measure the impact of the pipeline, run the same script with the same seed on two graphs:
+To compare graphs, for example a KG and synthetic graphs generated from it, run KGC.py once per graph with the same models and the same `random_seed`. Give each graph its own `results_path` under a common folder (see [Folder layout](#folder-layout)), then run `report_results.py`.
 
-| Run | `kg_path` |
-|---|---|
-| Baseline | The original graph converted to TSV |
-| Normalized | The `<rdf_stem>.normalized` graph converted to TSV |
+The models used so far are TransE, TransH, TransD, RotatE, ComplEx, TuckER and CompGCN. Other PyKEEN models can be listed in `models` too, but haven't been tried.
 
-and compare the metrics saved by PyKEEN.
-
-The supported models named in the project are TransE, TransH, TransD, RotatE, ComplEx, TuckER and CompGCN.
-
-> Predicate-object expansion (see [05](05-normalization-pipeline.md#31-predicate-object-expansion)) gives each triple a predicate specific to its object, so the normalized graph has many more distinct relations than the original. Keep this in mind when comparing models and reading their memory use.
+> A graph normalized by [VANILLA](https://github.com/SDM-TIB/VANILLA) gives each triple a predicate specific to its object, so it has many more distinct relations than the original. Keep this in mind when comparing models and reading their memory use.
 
 ## report_results.py
 
@@ -89,7 +80,6 @@ The supported models named in the project are TransE, TransH, TransD, RotatE, Co
 2. **The per-prediction analysis.** It recomputes the rank of every test prediction behind that table, and compares the graphs relation by relation and query by query. The results go to `Output/prediction_analysis/`. See [Per-prediction analysis](#per-prediction-analysis).
 
 ```bash
-cd Completion
 python report_results.py                                         # source vs every skgg* folder
 python report_results.py --root Output --output Output/metrics_report.csv
 python report_results.py --reference source --compare "skgg_std=*"
@@ -131,9 +121,9 @@ A folder whose `results.json` can't be read, or lacks the `both` / `realistic` s
 | `--reference` | `source` | Graph folder that every other graph of its KG is compared with. |
 | `--compare` | `skgg*` | Graph folders compared with the reference query by query: graphs that keep the reference's entity names. Shell-style patterns, several allowed. Quote them so the shell does not expand them. |
 
-The defaults are relative to `Completion/`, wherever the script is run from. Paths passed on the command line are relative to the current directory.
+The defaults are relative to the repository root, wherever the script is run from. Paths passed on the command line are relative to the current directory.
 
-Each run overwrites the files in `--analysis-dir`, but it does not delete files from earlier runs. A plot of a graph or model that is no longer under `--root` stays, and so does a comparison CSV that the new run did not write (see the `note:` messages in [11](11-troubleshooting.md#part-2-report_resultspy)). Empty the folder to start clean.
+Each run overwrites the files in `--analysis-dir`, but it does not delete files from earlier runs. A plot of a graph or model that is no longer under `--root` stays, and so does a comparison CSV that the new run did not write (see the `note:` messages in [troubleshooting](troubleshooting.md#report_resultspy)). Empty the folder to start clean.
 
 ## Evaluation metrics
 
@@ -184,7 +174,7 @@ PyKEEN stores further rank statistics that `report_results.py` does not collect.
 
 ### Comparing metrics across graphs
 
-The expected score of a random model depends on how many candidate entities each query has. For example, a random guess is in the top 10 far more often among 500 entities than among 5,000. Hits@k, MRR and MR are therefore not on the same scale for two graphs with different numbers of entities, such as a baseline graph and its normalized version. The adjusted metrics (AMRI, adjusted MRR, adjusted Hits@10) subtract out that random baseline. Report them alongside Hits@k and MRR when comparing graphs of different sizes.
+The expected score of a random model depends on how many candidate entities each query has. For example, a random guess is in the top 10 far more often among 500 entities than among 5,000. Hits@k, MRR and MR are therefore not on the same scale for two graphs with different numbers of entities, such as a KG and a synthetic graph generated from it. The adjusted metrics (AMRI, adjusted MRR, adjusted Hits@10) subtract out that random baseline. Report them alongside Hits@k and MRR when comparing graphs of different sizes.
 
 ## Per-prediction analysis
 
@@ -269,4 +259,4 @@ The bootstrap interval and the tests can disagree. The interval is about the mea
 
 ## Requirements
 
-`torch`, `pykeen`, `pandas`, `numpy`, `scipy` and `matplotlib`. See [02](02-installation.md#extra-packages-for-part-2).
+`torch`, `pykeen`, `pandas`, `numpy`, `scipy` and `matplotlib`. See [Installation](../README.md#installation).

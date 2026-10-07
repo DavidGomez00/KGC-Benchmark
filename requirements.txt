@@ -1,0 +1,6 @@
+pykeen
+torch
+pandas
+numpy
+scipy
+matplotlib
