@@ -13,7 +13,7 @@ Completion/
 
 ## Input
 
-`KGC.py` reads a **tab-separated** `.tsv` file of triples. The normalization pipeline writes N-Triples, so the normalized `.nt` must be converted to TSV first, e.g., with `utils/nt_to_tsv.py` ([07](07-tsv-to-nt.md)). Some benchmarks in the repository already have a `.tsv` beside the `.nt` (e.g., `Output/SGKG/transformed/SGKG_normalized.tsv`).
+`KGC.py` reads a **tab-separated** `.tsv` file of triples. The normalization pipeline writes N-Triples, so the normalized `.nt` must be converted to TSV first. Some benchmarks in the repository already have a `.tsv` beside the `.nt` (e.g., `Output/SGKG/transformed/SGKG_normalized.tsv`).
 
 ## KGC.py
 ```bash
