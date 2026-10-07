@@ -8,13 +8,14 @@ import pandas as pd
 import torch
 from matplotlib import pyplot as plt
 from pykeen import predict
+from pykeen.hpo import hpo_pipeline
 from pykeen.pipeline import pipeline, plot_losses
 from pykeen.triples import TriplesFactory
 
 
 def main():
     # Set default configuration file path
-    config_file = "input_KGC.json"
+    config_file = "input.json"
 
     # Load configuration from JSON file
     try:
@@ -49,6 +50,9 @@ def main():
     create_inverse_triples = config.get("create_inverse_triples", False)
     filtered_negative_sampling = config.get("filtered_negative_sampling", True)
     save_splits = config.get("save_splits", True)
+    hpo = config.get("hpo", False)
+    n_trials = config.get("n_trials", 30)
+    validation_ratio = config.get("validation_ratio", 0.1)
 
     if not kg_path:
         logger.error("Knowledge graph path is required in the configuration file!")
@@ -87,6 +91,13 @@ def main():
             )
             logger.info(f"Saved testing split to {os.path.join(results_path, 'test')}")
 
+        # HPO scores its trials on a validation set held out of the training split,
+        # so the test split stays the same as in a run without HPO
+        if hpo:
+            hpo_training, validation = training.split(
+                [1 - validation_ratio], random_state=random_seed
+            )
+
         # Train and evaluate models
         logger.info(f"Training the following models: {', '.join(models)}")
         for m in models:
@@ -96,6 +107,24 @@ def main():
             # Create model directory if it doesn't exist
             os.makedirs(model_results_path, exist_ok=True)
 
+            if hpo:
+                pipeline_kwargs = search_hyperparameters(
+                    tf_training=hpo_training,
+                    tf_validation=validation,
+                    tf_testing=testing,
+                    embedding=m,
+                    n_epoch=num_epochs,
+                    n_trials=n_trials,
+                    path=os.path.join(model_results_path, "hpo"),
+                    random_seed=random_seed,
+                    filtered_negative_sampling=filtered_negative_sampling,
+                )
+            else:
+                pipeline_kwargs = {
+                    "model_kwargs": {"embedding_dim": embedding_dim},
+                    "training_kwargs": {"batch_size": batch_size},
+                }
+
             # Train model
             model, result = create_model(
                 tf_training=training,
@@ -103,10 +132,9 @@ def main():
                 embedding=m,
                 n_epoch=num_epochs,
                 path=results_path,
-                embedding_dim=embedding_dim,
-                batch_size=batch_size,
                 random_seed=random_seed,
                 filtered_negative_sampling=filtered_negative_sampling,
+                **pipeline_kwargs,
             )
 
             # Create loss plot
@@ -160,10 +188,12 @@ def create_model(
     embedding,
     n_epoch,
     path,
-    embedding_dim=50,
-    batch_size=1024,
     random_seed=1235,
     filtered_negative_sampling=True,
+    model_kwargs=None,
+    training_kwargs=None,
+    negative_sampler_kwargs=None,
+    **pipeline_kwargs,
 ):
     """
     Train KGE models with required hyperparameters
@@ -174,10 +204,12 @@ def create_model(
         embedding: Model name
         n_epoch: Number of training epochs
         path: Path to save results
-        embedding_dim: Dimension of embeddings
-        batch_size: Batch size for training
         random_seed: Random seed for reproducibility
         filtered_negative_sampling: Whether to use filtered negative sampling
+        model_kwargs: Model hyperparameters, e.g. embedding_dim
+        training_kwargs: Training hyperparameters besides the epochs, e.g. batch_size
+        negative_sampler_kwargs: Negative sampler hyperparameters, e.g. num_negs_per_pos
+        **pipeline_kwargs: Any other pipeline() kwargs, e.g. optimizer_kwargs found by HPO
 
     Returns:
         tuple: (trained_model, results)
@@ -189,16 +221,20 @@ def create_model(
             testing=tf_testing,
             model=embedding,
             training_loop="sLCWA",
-            model_kwargs={"embedding_dim": embedding_dim},
-            negative_sampler_kwargs={"filtered": filtered_negative_sampling},
+            model_kwargs=model_kwargs,
+            negative_sampler_kwargs={
+                "filtered": filtered_negative_sampling,
+                **(negative_sampler_kwargs or {}),
+            },
             # Training configuration
             training_kwargs={
                 "num_epochs": n_epoch,
                 "use_tqdm_batch": True,
-                "batch_size": batch_size,
+                **(training_kwargs or {}),
             },
             # Runtime configuration
             random_seed=random_seed,
+            **pipeline_kwargs,
         )
         model = results.model
         results.save_to_directory(
@@ -209,6 +245,135 @@ def create_model(
     except Exception as e:
         logger.error(f"Error creating model {embedding}: {e!s}")
         raise
+
+
+def get_model_specific_params(model):
+    """
+    Get model-specific hyperparameter ranges for HPO
+
+    Args:
+        model: Model name
+
+    Returns:
+        dict: pykeen model_kwargs_ranges for the model
+    """
+    # Common parameters for all models
+    common_params = {
+        "embedding_dim": {"type": "int", "low": 50, "high": 200, "q": 50},
+    }
+
+    # Model-specific parameters
+    model_params = {
+        "TransE": {
+            **common_params,
+            "scoring_fct_norm": {"type": "int", "low": 1, "high": 2},
+        },
+        "ComplEx": {
+            **common_params,
+            "regularizer": {"type": "categorical", "choices": [None, "LP"]},
+        },
+        "RotatE": {**common_params},
+        "DistMult": {**common_params},
+        "CompGCN": {**common_params},
+        "ConvE": {
+            **common_params,
+            "input_channels": {"type": "int", "low": 1, "high": 3},
+            "output_channels": {"type": "int", "low": 32, "high": 128, "q": 32},
+            "kernel_height": {"type": "int", "low": 2, "high": 5},
+            "kernel_width": {"type": "int", "low": 2, "high": 5},
+            "embedding_height": {"type": "int", "low": 5, "high": 20, "q": 5},
+            "embedding_width": {"type": "int", "low": 5, "high": 20, "q": 5},
+            "input_dropout": {"type": "float", "low": 0.0, "high": 0.5},
+            "feature_map_dropout": {"type": "float", "low": 0.0, "high": 0.5},
+            "output_dropout": {"type": "float", "low": 0.0, "high": 0.5},
+        },
+        "TuckER": {
+            **common_params,
+            "relation_dim": {"type": "int", "low": 50, "high": 200, "q": 50},
+            "dropout_0": {"type": "float", "low": 0.0, "high": 0.5},
+            "dropout_1": {"type": "float", "low": 0.0, "high": 0.5},
+            "dropout_2": {"type": "float", "low": 0.0, "high": 0.5},
+            "apply_batch_normalization": {
+                "type": "categorical",
+                "choices": [True, False],
+            },
+        },
+    }
+
+    return model_params.get(model, common_params)
+
+
+def search_hyperparameters(
+    tf_training,
+    tf_validation,
+    tf_testing,
+    embedding,
+    n_epoch,
+    n_trials,
+    path,
+    random_seed=1235,
+    filtered_negative_sampling=True,
+):
+    """
+    Search the hyperparameters of a KGE model with pykeen's HPO pipeline
+
+    Each trial is trained on tf_training and scored by Hits@1 on tf_validation.
+
+    Args:
+        tf_training: Training triples factory, without the validation triples
+        tf_validation: Validation triples factory
+        tf_testing: Testing triples factory
+        embedding: Model name
+        n_epoch: Number of training epochs per trial
+        n_trials: Number of trials
+        path: Path to save the study
+        random_seed: Random seed for reproducibility
+        filtered_negative_sampling: Whether to use filtered negative sampling
+
+    Returns:
+        dict: The best trial's hyperparameters as pipeline() kwargs,
+            e.g. {"model_kwargs": {"embedding_dim": 100}, "optimizer_kwargs": {"lr": 0.01}}
+    """
+    logger = logging.getLogger(__name__)
+    logger.info(f"Searching hyperparameters for {embedding} over {n_trials} trials")
+    results = hpo_pipeline(
+        training=tf_training,
+        testing=tf_testing,
+        validation=tf_validation,
+        model=embedding,
+        training_loop="sLCWA",
+        # Model hyperparameter ranges - model specific
+        model_kwargs_ranges=get_model_specific_params(embedding),
+        # Training hyperparameter ranges
+        training_kwargs_ranges={
+            "batch_size": {"type": "int", "low": 128, "high": 512, "q": 128},
+        },
+        negative_sampler_kwargs={"filtered": filtered_negative_sampling},
+        negative_sampler_kwargs_ranges={
+            "num_negs_per_pos": {"type": "int", "low": 1, "high": 10},
+        },
+        # Training configuration
+        training_kwargs={"num_epochs": n_epoch, "use_tqdm": True},
+        # HPO configuration
+        n_trials=n_trials,
+        metric="hits@1",
+        direction="maximize",
+        sampler_kwargs={"seed": random_seed},
+    )
+    results.save_to_directory(path)
+
+    best_trial = results.study.best_trial
+    logger.info(f"Best trial value for {embedding}: {best_trial.value}")
+    logger.info("Best hyperparameters:")
+    for key, value in best_trial.params.items():
+        logger.info(f"{key}: {value}")
+
+    # pykeen names each parameter "<component>.<name>", e.g. "optimizer.lr"
+    pipeline_kwargs = {}
+    for key, value in best_trial.params.items():
+        component, name = key.split(".", 1)
+        pipeline_kwargs.setdefault(f"{component}_kwargs", {})[name] = value
+    return pipeline_kwargs
 
 
 def plotting(result, m, results_path):
