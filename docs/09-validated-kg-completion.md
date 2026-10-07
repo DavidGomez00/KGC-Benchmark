@@ -81,6 +81,60 @@ The supported models named in the project are TransE, TransH, TransD, RotatE, Co
 
 > Predicate-object expansion (see [05](05-normalization-pipeline.md#31-predicate-object-expansion)) gives each triple a predicate specific to its object, so the normalized graph has many more distinct relations than the original. Keep this in mind when comparing models and reading their memory use.
 
+## report_results.py
+
+`report_results.py` gathers the runs of every graph into one place, in two steps:
+
+1. **The metrics table.** It reads the `results.json` of every run and writes Hits@1/3/5/10, MRR and count, from the `both` / `realistic` slice (see [Evaluation metrics](#evaluation-metrics)), to `Output/metrics_report.csv`. There is one row per dataset and model.
+2. **The per-prediction analysis.** It recomputes the rank of every test prediction behind that table, and compares the graphs relation by relation and query by query. The results go to `Output/prediction_analysis/`. See [Per-prediction analysis](#per-prediction-analysis).
+
+```bash
+cd Completion
+python report_results.py                                         # source vs every skgg* folder
+python report_results.py --root Output --output Output/metrics_report.csv
+python report_results.py --reference source --compare "skgg_std=*"
+```
+
+### Folder layout
+
+The script finds every `results.json` under `--root` and expects the layout KGC.py writes:
+
+```
+<root>/<dataset...>/<model>/results.json
+```
+
+`<dataset...>` is the `results_path` of the run, relative to `--root`. It can be more than one folder, and the `dataset` column reports it with `/`, e.g. `french_royalty/skgg.std=1.filled`. The analysis splits it in two:
+
+| Part | Example | Meaning |
+|---|---|---|
+| `kg` | `french_royalty` | The parent folders: the KG that the graphs come from. |
+| `graph` | `skgg.std=1.filled` | The last folder: one graph of that KG. |
+
+Graphs are only compared with graphs of the same `kg`. Give each graph of a KG its own `results_path` under a common parent folder, for example:
+
+```
+Output/french_royalty/
+├── source/              the reference graph (--reference)
+├── skgg.std=1.filled/   compared query by query (matches --compare "skgg*")
+└── pygraft/             compared relation by relation only
+```
+
+A folder whose `results.json` can't be read, or lacks the `both` / `realistic` slice, is skipped with a warning. The rest of the report still runs.
+
+### Options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--root` | `Output` | Results folder to scan. |
+| `--output`, `-o` | `Output/metrics_report.csv` | Path of the metrics table. |
+| `--analysis-dir` | `Output/prediction_analysis` | Folder of the per-prediction analysis (CSV files and plots). |
+| `--reference` | `source` | Graph folder that every other graph of its KG is compared with. |
+| `--compare` | `skgg*` | Graph folders compared with the reference query by query: graphs that keep the reference's entity names. Shell-style patterns, several allowed. Quote them so the shell does not expand them. |
+
+The defaults are relative to `Completion/`, wherever the script is run from. Paths passed on the command line are relative to the current directory.
+
+Each run overwrites the files in `--analysis-dir`, but it does not delete files from earlier runs. A plot of a graph or model that is no longer under `--root` stays, and so does a comparison CSV that the new run did not write (see the `note:` messages in [11](11-troubleshooting.md#part-2-report_resultspy)). Empty the folder to start clean.
+
 ## Evaluation metrics
 
 ### How a test triple is ranked
@@ -134,13 +188,7 @@ The expected score of a random model depends on how many candidate entities each
 
 ## Per-prediction analysis
 
-After writing the table, `report_results.py` looks at every test prediction behind it. The results go to `Output/prediction_analysis/` (`--analysis-dir`).
-
-```bash
-cd Completion
-python report_results.py                                         # source vs every skgg* folder
-python report_results.py --reference source --compare "skgg_std=*"
-```
+After writing the table, [`report_results.py`](#report_resultspy) looks at every test prediction behind it. The results go to `Output/prediction_analysis/` (`--analysis-dir`).
 
 ### Recomputing the ranks
 

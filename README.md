@@ -38,6 +38,23 @@ downstream task of KG completion using link prediction. <br>
 python KGC.py
 ```
 
+3. **Collecting and analysing the results**
+
+```python
+python report_results.py
+```
+
+   It reads the `results.json` of every run under `Output/<dataset...>/<model>/` and writes:
+   - `Output/metrics_report.csv`: Hits@k and MRR, one row per dataset and model.
+   - `Output/prediction_analysis/`: the rank of every test prediction, the metrics per relation, and a
+     comparison of a reference graph (`--reference`, default `source`) with the other graphs of its KG,
+     relation by relation and query by query (`--compare`, default `skgg*`), with plots.
+
+   The analysis needs the `test` split, so keep `"save_splits": true`. Give each graph its own
+   `results_path` under a common folder, e.g. `Output/french_royalty/source` and
+   `Output/french_royalty/skgg.std=1.filled`. Options, outputs and statistics are described in
+   [docs/09](../docs/09-validated-kg-completion.md#report_resultspy).
+
 ## 📈 Evaluation Metrics
 
 We evaluate KG completion using embedding models:
@@ -48,6 +65,10 @@ We evaluate KG completion using embedding models:
 Metrics reported:
 - Hits@1, Hits@3, Hits@5, Hits@10
 - Mean Reciprocal Rank (MRR)
+
+`report_results.py` also reports them per relation, and compares graphs with a bootstrap interval of the MRR
+difference, Cliff's delta, Mann-Whitney and Kolmogorov-Smirnov tests, and, for queries held out in both
+graphs, Spearman's rank correlation and Cohen's kappa.
 
 ---
 
