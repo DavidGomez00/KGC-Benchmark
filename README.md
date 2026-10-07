@@ -31,7 +31,10 @@ E1959	predecessor	E150
 E1339	spouse	E1690
 ```
 
-Graphs in N-Triples or another RDF format have to be converted to this format first.
+You can also use an N-Triples file (`.nt`). KGC.py converts it to a `.tsv` file with the same name in the same
+folder, and trains on that file. IRIs lose their angle brackets: `<http://example.org/spouse>` becomes
+`http://example.org/spouse`. Graphs in another RDF format, such as Turtle, have to be converted to one of these
+two formats first.
 
 ## Configuring a run
 
@@ -48,7 +51,7 @@ Add a key only when you want to change its default:
 
 | Key | Default | What it does |
 |---|---|---|
-| `kg_path` | *required* | The graph to train on |
+| `kg_path` | *required* | The graph to train on, as a `.tsv` or `.nt` file |
 | `results_path` | *required* | The folder to save the splits, trained models and plots in |
 | `models` | `["TransE", "TransH", "TransD", "ComplEx", "RotatE", "TuckER"]` | The [PyKEEN models](https://pykeen.readthedocs.io/en/stable/reference/models.html) to train |
 | `num_epochs` | `100` | Training epochs |

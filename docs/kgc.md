@@ -12,7 +12,16 @@ KGC-Benchmark/
 
 ## Input
 
-`KGC.py` reads a **tab-separated** `.tsv` file of triples: one triple per line, head, relation and tail separated by tabs. A graph in N-Triples or another RDF format must be converted to TSV first.
+`KGC.py` reads a **tab-separated** `.tsv` file of triples: one triple per line, head, relation and tail separated by tabs.
+
+It also reads **N-Triples** (`.nt`) files. When `kg_path` ends in `.nt`, KGC.py first converts the file to a `.tsv` with the same name in the same folder (`.data/kg/graph.nt` becomes `.data/kg/graph.tsv`), then runs as usual on the `.tsv`:
+
+- IRIs are written without their angle brackets: `<http://example.org/spouse>` becomes `http://example.org/spouse`.
+- Blank nodes (`_:b1`) and literals (`"42"^^<http://www.w3.org/2001/XMLSchema#integer>`, `"Anne"@en`) are written as they appear in the `.nt` file. A literal is an entity like any other, so remove the literal triples from the graph first if you don't want them in the training and test splits.
+- Empty lines and comments are skipped. A line that isn't an N-Triples statement stops the run with the line number.
+- If the `.tsv` already exists and is newer than the `.nt` file, KGC.py uses it without converting again. Otherwise, it **overwrites** the `.tsv`, so don't keep another graph under that name.
+
+A graph in another RDF format, such as Turtle, must be converted to N-Triples or TSV first.
 
 ## KGC.py
 ```bash
@@ -21,7 +30,7 @@ python KGC.py
 
 It reads `input.json` (see [configuration](configuration.md)) and:
 
-1. Loads the `.tsv` into a PyKEEN `TriplesFactory`.
+1. Converts the graph to a `.tsv` if it's an `.nt` file (see [Input](#input)), and loads the `.tsv` into a PyKEEN `TriplesFactory`.
 2. Splits it into training (80%) and testing (20%) sets.
 3. If `save_splits` is true, writes `train` and `test` tab separated files to `results_path`.
 4. For every model in `models`: trains it on the training split with PyKEEN's `pipeline` using the sLCWA training loop, the configured embedding size, batch size and epochs, and optionally filtered negative sampling.

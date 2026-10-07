@@ -5,7 +5,7 @@ paths in it are relative to the directory KGC.py runs from, normally the reposit
 
 | Key | Default | Meaning |
 |---|---|---|
-| `kg_path` | required | Path to the KG as a **tab-separated** file (subject, predicate, object). |
+| `kg_path` | required | Path to the KG as a **tab-separated** file (subject, predicate, object), or as an N-Triples `.nt` file, which is converted to a `.tsv` next to it. See [Input](kgc.md#input). |
 | `results_path` | required | Output directory for splits, models and plots. |
 | `models` | `["TransE","TransH","TransD","ComplEx","RotatE","TuckER"]` | PyKEEN model names to train. |
 | `num_epochs` | 100 | Training epochs (of every trial too, with `hpo`). |

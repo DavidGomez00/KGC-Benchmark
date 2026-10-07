@@ -2,6 +2,7 @@ import gc
 import json
 import logging
 import os
+import re
 
 import numpy as np
 import pandas as pd
@@ -65,9 +66,13 @@ def main():
     # Create results directory if it doesn't exist
     os.makedirs(results_path, exist_ok=True)
 
-    # Load dataset
-    logger.info(f"Loading knowledge graph from {kg_path}")
     try:
+        # Convert an N-Triples graph to a .tsv next to it, then use the .tsv
+        if kg_path.lower().endswith(".nt"):
+            kg_path = convert_ntriples(kg_path)
+
+        # Load dataset
+        logger.info(f"Loading knowledge graph from {kg_path}")
         tf, triple_data, entity_label, relation_label = load_dataset(
             kg_path, create_inverse_triples
         )
@@ -151,9 +156,71 @@ def main():
         logger.error(traceback.format_exc())
 
 
+# One N-Triples statement: subject, predicate and object, then a final "."
+NT_IRI = r"<[^>]*>"
+NT_BLANK_NODE = r"_:\S+"
+NT_LITERAL = r'"(?:[^"\\]|\\.)*"(?:@[A-Za-z0-9-]+|\^\^<[^>]*>)?'
+NT_TRIPLE = re.compile(
+    rf"\s*({NT_IRI}|{NT_BLANK_NODE})\s*({NT_IRI})\s*"
+    rf"({NT_IRI}|{NT_BLANK_NODE}|{NT_LITERAL})\s*\.\s*(?:#.*)?"
+)
+
+
+def convert_ntriples(nt_path):
+    """
+    Convert an N-Triples file to a .tsv file with the same name, in the same folder.
+
+    IRIs are written without their angle brackets; blank nodes and literals are
+    written as they appear in the N-Triples file. A .tsv newer than the N-Triples
+    file is reused instead of being converted again.
+
+    Args:
+        nt_path (str): Path to the .nt file
+
+    Returns:
+        str: Path to the .tsv file
+    """
+    logger = logging.getLogger(__name__)
+    tsv_path = os.path.splitext(nt_path)[0] + ".tsv"
+    if os.path.exists(tsv_path) and os.path.getmtime(tsv_path) >= os.path.getmtime(
+        nt_path
+    ):
+        logger.info(f"Using {tsv_path}, already converted from {nt_path}")
+        return tsv_path
+
+    logger.info(f"Converting {nt_path} to {tsv_path}")
+    triples = []
+    with open(nt_path, encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            match = NT_TRIPLE.fullmatch(line)
+            if not match:
+                raise ValueError(
+                    f"{nt_path}, line {line_number} is not an N-Triples statement: {line}"
+                )
+            terms = [
+                term[1:-1] if term.startswith("<") else term for term in match.groups()
+            ]
+            if any("\t" in term for term in terms):
+                raise ValueError(
+                    f"{nt_path}, line {line_number} has a tab inside a term, "
+                    f"which can't be written to a .tsv: {line}"
+                )
+            triples.append("\t".join(terms))
+
+    # Write to a temporary file first, so an interrupted run leaves no partial .tsv
+    with open(tsv_path + ".tmp", "w", encoding="utf-8") as f:
+        f.write("\n".join(triples) + "\n")
+    os.replace(tsv_path + ".tmp", tsv_path)
+    logger.info(f"Wrote {len(triples)} triples to {tsv_path}")
+    return tsv_path
+
+
 def load_dataset(name, create_inverse_triples=False):
     """
-    Load and preprocess the knowledge graph from a TSV/NT file.
+    Load and preprocess the knowledge graph from a TSV file.
 
     Args:
         name (str): Path to the dataset file

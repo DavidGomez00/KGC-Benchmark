@@ -6,6 +6,21 @@ Each entry gives the symptom, the cause, and the fix.
 
 `KGC.py` reads `input.json` relative to the current directory. Run it from the repository root.
 
+## `... line N is not an N-Triples statement` or `... has a tab inside a term`
+
+**Cause:** `kg_path` ends in `.nt`, and line N of that file isn't a single subject, predicate and object
+followed by `.`, usually because it's Turtle (prefixes, `;` or `,` lists) or a statement is split over two
+lines. A literal containing a tab can't be written to the `.tsv` either. No `.tsv` is written. See
+[Input](kgc.md#input).
+**Fix:** convert the graph to strict N-Triples, for example with `rapper -i turtle -o ntriples` or rdflib, and
+escape tabs in literals as `\t`.
+
+## KGC.py trains on an old version of an `.nt` graph
+
+**Cause:** the `.tsv` next to the `.nt` file is newer than it, so KGC.py reused it instead of converting
+again. This happens when the `.nt` file is replaced by a copy that keeps an older modification time.
+**Fix:** delete the `.tsv` and run KGC.py again.
+
 ## report_results.py
 
 `report_results.py` prints `error:` when it stops, `warning:` when it leaves a run out, and `note:` when a
