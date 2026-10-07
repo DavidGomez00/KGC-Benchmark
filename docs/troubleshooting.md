@@ -78,3 +78,10 @@ the graphs name their entities differently (PyGraft's `E1`, `E2`, ... never pair
 alphabetical order, and the graphs after the eighth are left out of `<kg>_relations.png` and
 `<kg>_<model>_hits_at_k.png`. The CSV files still include them.
 **Fix:** move the graphs you don't need in the plots out of the KG's folder.
+
+### `warning: <kg> has N models, the Hits@k line plots show the first 8`
+
+**Cause:** the Hits@k line plots draw one line per model, in 8 colors. The models are taken in alphabetical
+order, and the ones after the eighth are left out of `<kg>_models_hits_at_1-15.png` and
+`<kg>_<graph>_relations_hits_at_1-15.png`. The CSV files still include them.
+**Fix:** move the runs of the models you don't need in the plots out of the KG's folder.

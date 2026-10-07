@@ -91,9 +91,11 @@ Output/
 
 Then run `python report_results.py`. It writes:
 
-- **`Output/metrics_report.csv`**: Hits@1, 3, 5 and 10 and MRR, with one row per graph and model.
-- **`Output/prediction_analysis/`**: the rank of every test prediction, the metrics per relation, and plots
-  comparing the reference graph with the other versions.
+- **`Output/metrics_report.csv`**: Hits@1 to Hits@15 and MRR, with one row per graph and model.
+- **`Output/prediction_analysis/`**: the rank of every test prediction, the metrics per relation, and plots:
+  - **Hits@1 to Hits@15, one line per model**, for each graph (`<kg>_models_hits_at_1-15.png`) and for each
+    relation of a graph (`<kg>_<graph>_relations_hits_at_1-15.png`)
+  - the reference graph compared with the other versions, relation by relation and query by query
 
 By default, the reference is the folder named `source` and it is compared query by query with the folders
 matching `skgg*`. You can change both settings:

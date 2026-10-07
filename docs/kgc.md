@@ -78,7 +78,7 @@ The models used so far are TransE, TransH, TransD, RotatE, ComplEx, TuckER and C
 
 `report_results.py` gathers the runs of every graph into one place, in two steps:
 
-1. **The metrics table.** It reads the `results.json` of every run and writes Hits@1/3/5/10, MRR and count, from the `both` / `realistic` slice (see [Evaluation metrics](#evaluation-metrics)), to `Output/metrics_report.csv`. There is one row per dataset and model.
+1. **The metrics table.** It writes Hits@1 to Hits@15, MRR and count, from the `both` / `realistic` slice (see [Evaluation metrics](#evaluation-metrics)), to `Output/metrics_report.csv`. There is one row per dataset and model. MRR, count and Hits@1, 3, 5 and 10 come from the run's `results.json`. PyKEEN doesn't store the other values of k, so they are counted from the ranks of the per-prediction analysis, and stay empty for a run it leaves out.
 2. **The per-prediction analysis.** It recomputes the rank of every test prediction behind that table, and compares the graphs relation by relation and query by query. The results go to `Output/prediction_analysis/`. See [Per-prediction analysis](#per-prediction-analysis).
 
 ```bash
@@ -153,7 +153,7 @@ Each `<results_path>/<model>/results.json` stores the metrics as `metrics[<side>
 
 | Metric | Key in `results.json` | Range | Better | Meaning |
 |---|---|---|---|---|
-| Hits@k (k = 1, 3, 5, 10) | `hits_at_1`, `hits_at_3`, `hits_at_5`, `hits_at_10` | 0 to 1 | Higher | Fraction of test predictions where the true entity is among the top *k* candidates. Hits@1 is the fraction where the model's single best guess is correct. Hits@10 = 0.40 means the right answer is in the top 10 for 40% of predictions. |
+| Hits@k (k = 1 to 15) | `hits_at_1` to `hits_at_15` | 0 to 1 | Higher | Fraction of test predictions where the true entity is among the top *k* candidates. Hits@1 is the fraction where the model's single best guess is correct. Hits@10 = 0.40 means the right answer is in the top 10 for 40% of predictions. Hits@k never decreases as k grows. `results.json` only holds k = 1, 3, 5 and 10. |
 | Mean Reciprocal Rank (MRR) | `inverse_harmonic_mean_rank` | 0 to 1 | Higher | Mean of `1 / rank` over all predictions. Rank 1 adds 1, rank 2 adds 0.5, rank 10 adds 0.1, and rank 1000 adds almost nothing. It rewards answers at or near the top, and it barely changes whether a missed answer sits at rank 200 or rank 2000. |
 | count | `count` | Up to 2 × test triples | n/a | Number of ranks the metrics average over. In the `both` slice this is two per test triple (one head prediction and one tail prediction). |
 
@@ -211,13 +211,15 @@ PyGraft names its entities `E1`, `E2`, ..., so none of its queries pair with the
 
 | File | One row per | Contents |
 |---|---|---|
-| `predictions.csv` | test prediction of every run | `side` (the entity predicted, `head` or `tail`), the test triple, `rank`, `candidates` (the entities it was ranked among, after filtering), `reciprocal_rank`, and `hits_at_1` to `hits_at_10` (1 or 0) |
+| `predictions.csv` | test prediction of every run | `side` (the entity predicted, `head` or `tail`), the test triple, `rank`, `candidates` (the entities it was ranked among, after filtering), `reciprocal_rank`, and `hits_at_1` to `hits_at_15` (1 or 0) |
 | `relation_report.csv` | dataset, model and relation | The columns of `metrics_report.csv`, computed per relation |
 | `relation_comparison.csv` | KG, compared graph, model and relation | Each relation in the reference graph against every other graph, see [Comparing relations across graphs](#comparing-relations-across-graphs) |
-| `query_comparison.csv` | query paired between two graphs | The `query`, then for each graph (`reference_` and `compared_` columns): its number of held-out `answers`, their `mrr`, and the share of them in the top k (`hits_at_k`) |
+| `query_comparison.csv` | query paired between two graphs | The `query`, then for each graph (`reference_` and `compared_` columns): its number of held-out `answers`, their `mrr`, and the share of them in the top k (`hits_at_k`, for k = 1, 3, 5 and 10) |
 | `query_comparison_summary.csv` | comparison, model, group of queries and k | See the table below |
 | `<kg>_relations.png` | KG | `relation_report.csv` as a chart: one row of panels per model, MRR and Hits@10 per relation, and one column per graph. Each graph keeps its color in every plot: the reference first, then the compared graphs, then the rest (e.g. source, skgg.std=1.filled, pygraft) |
 | `<kg>_<model>_hits_at_k.png` | KG and model | One panel per relation and one line per graph: the share of test predictions whose true answer ranks in the top k, for every k (its height at k = 1 and k = 10 is Hits@1 and Hits@10). Each panel lists the Cliff's delta of every graph against the reference, marked `n.s.` when not significant |
+| `<kg>_models_hits_at_1-15.png` | KG | One panel per graph and one line per model: Hits@1 to Hits@15, to compare how fast each model's accuracy grows with k. Each model keeps its color in every plot of this kind |
+| `<kg>_<graph>_relations_hits_at_1-15.png` | KG and graph | The same lines, in a first panel over all relations (the graph's panel above) and then one panel per relation. Each panel gives its number of test predictions per model, since a rare relation rests on few of them |
 | `<kg>_<compared>_<model>.png` | comparison and model | Left: how the ranks of all test predictions of each graph spread over rank buckets. Right: for the paired queries, how each rank bucket of the reference graph spreads over the buckets of the compared graph |
 
 `query_comparison_summary.csv` has one row per group of queries and per k (1, 3, 5 and 10). There are three kinds of group:
