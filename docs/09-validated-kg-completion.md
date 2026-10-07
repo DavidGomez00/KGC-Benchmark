@@ -6,16 +6,14 @@ part 1) and reports standard link-prediction metrics.
 
 ```
 Completion/
-├── KGC.py               Train and evaluate models with fixed hyperparameters
-├── input_KGC.json       Configuration for KGC.py
-├── KGC_hpo.py           Train and evaluate models with hyperparameter optimization
-├── input_KGC_hpo.json   Configuration for KGC_hpo.py
+├── KGC.py               Train and evaluate models, optionally after hyperparameter optimization
+├── input.json           Configuration for KGC.py
 └── report_results.py    Collect Hits@k and MRR into one CSV and analyse every test prediction
 ```
 
 ## Input
 
-Both scripts (`KGC.py` and `KGC_hpo.py`) read a **tab-separated** `.tsv` file of triples. The normalization pipeline writes N-Triples, so the normalized `.nt` must be converted to TSV first, e.g., with `utils/nt_to_tsv.py` ([07](07-tsv-to-nt.md)). Some benchmarks in the repository already have a `.tsv` beside the `.nt` (e.g., `Output/SGKG/transformed/SGKG_normalized.tsv`).
+`KGC.py` reads a **tab-separated** `.tsv` file of triples. The normalization pipeline writes N-Triples, so the normalized `.nt` must be converted to TSV first, e.g., with `utils/nt_to_tsv.py` ([07](07-tsv-to-nt.md)). Some benchmarks in the repository already have a `.tsv` beside the `.nt` (e.g., `Output/SGKG/transformed/SGKG_normalized.tsv`).
 
 ## KGC.py
 ```bash
@@ -23,12 +21,12 @@ cd Completion
 python KGC.py
 ```
 
-It reads `input_KGC.json` (see [03](03-configuration.md#validated_kg_completioninput_kgcjson)) and:
+It reads `input.json` (see [03](03-configuration.md#completioninputjson)) and:
 
 1. Loads the `.tsv` into a PyKEEN `TriplesFactory`.
-2. Splits it into training and testing sets.
+2. Splits it into training (80%) and testing (20%) sets.
 3. If `save_splits` is true, writes `train` and `test` tab separated files to `results_path`.
-4. For every model in `models`: trains it with PyKEEN's `pipeline` using the sLCWA training loop, the configured embedding size, batch size and epochs, and optionally filtered negative sampling.
+4. For every model in `models`: trains it on the training split with PyKEEN's `pipeline` using the sLCWA training loop, the configured embedding size, batch size and epochs, and optionally filtered negative sampling.
 5. Saves the pipeline results to `<results_path>/<model>/` and a `loss_plot.png` next to them.
 
 Example configuration:
@@ -45,19 +43,28 @@ Example configuration:
   "create_inverse_triples": false,
   "filtered_negative_sampling": true,
   "save_splits": true,
-  "log_level": "INFO"
+  "log_level": "INFO",
+  "hpo": false,
+  "n_trials": 30,
+  "validation_ratio": 0.1
 }
 ```
 
-## KGC_hpo.py
-```bash
-cd Completion
-python KGC_hpo.py
-```
+### Hyperparameter optimization
 
-Reads `input_KGC_hpo.json`. Uses PyKEEN's `hpo_pipeline` with `n_trials` trials per model, with
-model-specific search ranges defined in `get_model_specific_params`. Results are saved to
-`<output_dir>/<model>/`.
+With `"hpo": true`, KGC.py searches each model's hyperparameters before step 4, using PyKEEN's
+`hpo_pipeline`:
+
+1. Holds `validation_ratio` of the training split out as a validation set, once for all models. The `test`
+   split is the same as in a run without HPO with the same `random_seed`, so both runs can be compared.
+2. Runs `n_trials` trials per model on the rest of the training split, each scored by Hits@1 on the
+   validation set. The trials search the embedding size, the batch size, the number of negatives per
+   positive, PyKEEN's default ranges for the optimizer and loss, and model-specific ranges defined in
+   `get_model_specific_params`. `embedding_dim` and `batch_size` from `input.json` are ignored.
+3. Saves the study to `<results_path>/<model>/hpo/`: `study.json`, `trials.tsv` and
+   `best_pipeline/pipeline_config.json`.
+4. Trains the model with the best trial's hyperparameters on the **whole** training split and saves it like a
+   run without HPO (step 5), so `report_results.py` reads it too.
 
 ## Comparing the effect of normalization
 

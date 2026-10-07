@@ -10,7 +10,7 @@ downstream task of KG completion using link prediction. <br>
 ## 🚀 Running the Pipeline of Validates KG Completion
 
 1. **Configure input**
-   Modify `input.json` to select the benchmark KG and rule/constraint files.
+   Modify `input.json` to select the KG, the models and their hyperparameters.
 ```json
 {
   "kg_path": "path_to_your_dataset/TransformedKG_YAGO3-10.tsv",
@@ -24,37 +24,18 @@ downstream task of KG completion using link prediction. <br>
   "filtered_negative_sampling": true,
   "save_splits": true,
   "log_level": "INFO",
-  "create_inverse_triples": false
+  "hpo": false,
+  "n_trials": 30,
+  "validation_ratio": 0.1
 }
 ```
-2. **Executing KG Normalization**
+   Set `"hpo": true` to search each model's hyperparameters (`n_trials` trials, scored on a validation set
+   holding `validation_ratio` of the training triples) and train it with the best ones.
+
+2. **Executing KG Completion**
 
 ```python
 python KGC.py
-```
-
-## 🚀 Running the Pipeline of Validates KG Completion with Hyperparameter Optimization
-
-1. **Configure input**
-   Modify `input.json` to select the benchmark KG and rule/constraint files.
-```json
-{
-  "dataset_path": "path_to_your_dataset/DB100K.tsv",
-  "output_dir": "path_to_your_dataset/CompGCN-HPO",
-  "models": ["CompGCN"],
-  "n_trials": 10,
-  "train_ratio": 0.8,
-  "test_ratio": 0.1,
-  "val_ratio": 0.1,
-  "random_state": 1234,
-  "num_epochs": 100,
-  "log_level": "INFO"
-}
-```
-2. **Executing KG Normalization**
-
-```python
-python KGC_hpo.py
 ```
 
 ## 📈 Evaluation Metrics
