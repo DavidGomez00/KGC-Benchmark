@@ -105,6 +105,9 @@ python report_results.py --reference source --compare "skgg*"
 python report_results.py --help    # all options
 ```
 
+The plots name each graph by its folder unless you give it a readable name in the `GRAPH_NAMES` dictionary at
+the top of `report_results.py`, e.g. `"skgg.pca=0.9.filled": "SKGG (PCA 0.9, filled)"`.
+
 ## Documentation
 
 | Page | Contents |

@@ -113,6 +113,8 @@ Output/french_royalty/
 
 A folder whose `results.json` can't be read, or lacks the `both` / `realistic` slice, is skipped with a warning. The rest of the report still runs.
 
+The plots show each graph under a readable name from the `GRAPH_NAMES` dictionary at the top of `report_results.py`, for example `skgg.pca=0.9.filled` as "SKGG (PCA 0.9, filled)". A folder that isn't in it is shown by its folder name. The CSV files and the plot file names always use the folder names, and so do `--reference` and `--compare`.
+
 ### Options
 
 | Option | Default | Meaning |
@@ -217,7 +219,7 @@ PyGraft names its entities `E1`, `E2`, ..., so none of its queries pair with the
 | `query_comparison.csv` | query paired between two graphs | The `query`, then for each graph (`reference_` and `compared_` columns): its number of held-out `answers`, their `mrr`, and the share of them in the top k (`hits_at_k`, for k = 1, 3, 5 and 10) |
 | `query_comparison_summary.csv` | comparison, model, group of queries and k | See the table below |
 | `<kg>_relations.png` | KG | `relation_report.csv` as a chart: one row of panels per model, MRR and Hits@10 per relation, and one column per graph. Each graph keeps its color in every plot: the reference first, then the compared graphs, then the rest (e.g. source, skgg.std=1.filled, pygraft) |
-| `<kg>_<model>_hits_at_k.png` | KG and model | One panel per relation and one line per graph: the share of test predictions whose true answer ranks in the top k, for every k (its height at k = 1 and k = 10 is Hits@1 and Hits@10). Each panel lists the Cliff's delta of every graph against the reference, marked `n.s.` when not significant |
+| `<kg>_<model>_hits_at_k.png` | KG and model | One panel per relation and one line per graph: the share of test predictions whose true answer ranks in the top k, for every k (its height at k = 1 and k = 10 is Hits@1 and Hits@10). Under each panel's title, one line per graph gives its Cliff's delta against the reference, marked `n.s.` when not significant |
 | `<kg>_models_hits_at_1-15.png` | KG | One panel per graph and one line per model: Hits@1 to Hits@15, to compare how fast each model's accuracy grows with k. Each model keeps its color in every plot of this kind |
 | `<kg>_<graph>_relations_hits_at_1-15.png` | KG and graph | The same lines, in a first panel over all relations (the graph's panel above) and then one panel per relation. Each panel gives its number of test predictions per model, since a rare relation rests on few of them |
 | `<kg>_<compared>_<model>.png` | comparison and model | Left: how the ranks of all test predictions of each graph spread over rank buckets. Right: for the paired queries, how each rank bucket of the reference graph spreads over the buckets of the compared graph |

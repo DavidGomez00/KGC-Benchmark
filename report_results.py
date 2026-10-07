@@ -41,6 +41,9 @@ Each relation is also compared between the reference and every other graph
 of its KG, PyGraft included, over all the relation's test predictions: the
 difference in MRR, and tests and an effect size for the rank distributions.
 
+The plots name each graph by its GRAPH_NAMES entry, or by its folder name
+when it has none. The CSV files and the plot file names keep folder names.
+
 The analysis is written to `--analysis-dir`:
 
     predictions.csv                  one row per test prediction, every run
@@ -102,6 +105,16 @@ FILTERING = "realistic"
 # generated from that KG that keep its entity names (PyGraft's don't).
 DEFAULT_REFERENCE = "source"
 DEFAULT_COMPARED = ["skgg*"]
+
+# Names shown in the plots for each graph's results folder (the last folder
+# of its results_path). A folder that isn't listed is shown by its folder
+# name. The CSV files and the plot file names keep the folder names.
+GRAPH_NAMES = {
+    "source": "Original KG",
+    "skgg.pca=0.9.filled": "SKGG (PCA 0.9)",
+    "skgg.std=1.filled": "SKGG",
+    "pygraft": "PyGraft",
+}
 
 # Every k reported, in the tables and the Hits@k line plots. results.json
 # only holds k = 1, 3, 5 and 10; the others come from the recomputed ranks.
@@ -197,6 +210,8 @@ SEQUENTIAL = LinearSegmentedColormap.from_list(
 BAR_WIDTH_PX = 24
 BAR_GAP_PX = 2
 BAR_RADIUS_PX = 4
+# Height of one δ line above a Hits@k curve panel, in points.
+DELTA_LINE_PT = 11
 HITS_SUBTITLE = (
     "Share of test predictions whose true answer ranks in the top k, head and tail predictions "
     "pooled.\nHits@k never decreases with k. A steep stretch of a line means many true answers "
@@ -449,6 +464,11 @@ def split_dataset(table: pd.DataFrame) -> pd.DataFrame:
         kg=dataset.map(lambda p: p.parent.as_posix()),
         graph=dataset.map(lambda p: p.name),
     )
+
+
+def graph_name(graph: str) -> str:
+    """The name the plots show for a graph's folder: its GRAPH_NAMES entry, else the folder name."""
+    return GRAPH_NAMES.get(graph, graph)
 
 
 def is_compared(graph: str, reference: str, patterns: list[str]) -> bool:
@@ -827,7 +847,7 @@ def plot_comparison(
     fig.text(
         0.07,
         0.95,
-        f"{title}: {reference} vs {compared}",
+        f"{title}: {graph_name(reference)} vs {graph_name(compared)}",
         color=INK,
         fontsize=13,
         fontweight="semibold",
@@ -837,8 +857,8 @@ def plot_comparison(
         0.07,
         0.895,
         f"{len(paired):,} queries held out in both graphs · Spearman ρ = {fmt(rho, '.2f')} "
-        f"between their per-query MRRs\nAt Hits@{k}, {compared} is accurate on "
-        f"{fmt(when_accurate, '.0%')} of the queries {reference} gets right, and on "
+        f"between their per-query MRRs\nAt Hits@{k}, {graph_name(compared)} is accurate on "
+        f"{fmt(when_accurate, '.0%')} of the queries {graph_name(reference)} gets right, and on "
         f"{fmt(when_inaccurate, '.0%')} of those it misses",
         color=INK_SECONDARY,
         fontsize=9.5,
@@ -878,7 +898,10 @@ def plot_comparison(
     )
     left.legend(
         handles=[
-            Patch(facecolor=color, label=f"{graph} ({totals[graph]:,} predictions)")
+            Patch(
+                facecolor=color,
+                label=f"{graph_name(graph)} ({totals[graph]:,} predictions)",
+            )
             for graph, color in zip((reference, compared), SERIES_COLORS)
         ],
         loc="lower left",
@@ -938,8 +961,12 @@ def plot_comparison(
     ticks = np.arange(len(BUCKET_LABELS)) + 0.5
     right.set_xticks(ticks, BUCKET_LABELS)
     right.set_yticks(ticks, BUCKET_LABELS)
-    right.set_xlabel(f"Rank in {compared}", color=INK_SECONDARY, fontsize=9.5)
-    right.set_ylabel(f"Rank in {reference}", color=INK_SECONDARY, fontsize=9.5)
+    right.set_xlabel(
+        f"Rank in {graph_name(compared)}", color=INK_SECONDARY, fontsize=9.5
+    )
+    right.set_ylabel(
+        f"Rank in {graph_name(reference)}", color=INK_SECONDARY, fontsize=9.5
+    )
     right.set_title(
         "Paired queries, by rank in each graph",
         loc="left",
@@ -1012,7 +1039,9 @@ def plot_relations(report: pd.DataFrame, graphs: list[str], path: Path) -> None:
         va="top",
     )
     fig.legend(
-        handles=[Patch(facecolor=colors[graph], label=graph) for graph in graphs],
+        handles=[
+            Patch(facecolor=colors[graph], label=graph_name(graph)) for graph in graphs
+        ],
         loc="upper left",
         bbox_to_anchor=(0.06, 1 - 1.0 / height),
         ncols=len(graphs),
@@ -1056,24 +1085,23 @@ def plot_relations(report: pd.DataFrame, graphs: list[str], path: Path) -> None:
     plt.close(fig)
 
 
-def delta_note(comparison: pd.DataFrame, graphs: list[str]) -> str:
+def delta_notes(comparison: pd.DataFrame, graphs: list[str]) -> list[tuple[str, str]]:
     """
-    One line with the Cliff's delta of every graph against the reference,
-    from one relation's `compare_relations` rows, in the order of `graphs`,
-    e.g. "δ vs source: skgg.std=1.filled −0.72, pygraft −0.95 n.s.", where n.s.
-    marks a Holm-adjusted Mann-Whitney p of SIGNIFICANCE or more.
+    The Cliff's delta of every graph against the reference, from one
+    relation's `compare_relations` rows, as (graph, line) pairs in the order
+    of `graphs`, e.g. ("pygraft", "PyGraft  δ −0.95 n.s."), where n.s. marks
+    a Holm-adjusted Mann-Whitney p of SIGNIFICANCE or more.
     """
-    if comparison.empty:
-        return ""
     rows = comparison.set_index("compared")
-    entries = []
+    notes = []
     for graph in graphs:
         if graph in rows.index:
             row = rows.loc[graph]
             delta = f"{row['cliffs_delta']:+.2f}".replace("-", "−")
             significant = row["mannwhitney_p_holm"] < SIGNIFICANCE
-            entries.append(f"{graph} {delta}" + ("" if significant else " n.s."))
-    return f"δ vs {comparison['reference'].iat[0]}: " + ", ".join(entries)
+            line = f"{graph_name(graph)}  δ {delta}" + ("" if significant else " n.s.")
+            notes.append((graph, line))
+    return notes
 
 
 def plot_hits_curves(
@@ -1097,12 +1125,20 @@ def plot_hits_curves(
     colors = dict(zip(graphs, CATEGORICAL))
     trained = [graph for graph in graphs if graph in set(predictions["graph"])]
     k_max = predictions["candidates"].max()
+    notes = {
+        relation: delta_notes(comparison[comparison["relation"] == relation], graphs)
+        for relation in relations
+    }
+    lines = max(len(n) for n in notes.values())
 
-    # Heights in inches: the header, one row per 4 relations, the bottom axis.
+    # Heights in inches: the header, one row of panels per 4 relations, each
+    # under its title and δ lines, and the bottom axis.
     columns = 4
     rows = -(-len(relations) // columns)
-    header, row_height, footer = 2.0, 2.7, 0.6
-    height = header + row_height * rows + footer
+    header, panel, footer = 2.0, 1.85, 0.6
+    notes_height = lines * DELTA_LINE_PT / 72
+    gap = 0.45 * panel + notes_height  # between rows of panels
+    height = header + notes_height + rows * panel + (rows - 1) * gap + footer
     fig, axes = plt.subplots(
         rows, columns, figsize=(13, height), dpi=PLOT_DPI, squeeze=False
     )
@@ -1110,10 +1146,10 @@ def plot_hits_curves(
     fig.subplots_adjust(
         left=0.06,
         right=0.98,
-        top=1 - header / height,
+        top=1 - (header + notes_height) / height,
         bottom=footer / height,
         wspace=0.18,
-        hspace=0.45,
+        hspace=gap / panel,
     )
 
     fig.text(
@@ -1131,7 +1167,7 @@ def plot_hits_curves(
     )
     if not comparison.empty:
         subtitle += (
-            f"\nδ: Cliff's delta against {reference} on candidate-normalized ranks, "
+            f"\nδ: Cliff's delta against {graph_name(reference)} on candidate-normalized ranks, "
             "negative when the graph does worse; n.s.: Holm-adjusted Mann-Whitney "
             f"p ≥ {SIGNIFICANCE}."
         )
@@ -1146,7 +1182,9 @@ def plot_hits_curves(
     )
     fig.legend(
         handles=[
-            Line2D([], [], color=colors[graph], linewidth=2 * PX, label=graph)
+            Line2D(
+                [], [], color=colors[graph], linewidth=2 * PX, label=graph_name(graph)
+            )
             for graph in trained
         ],
         loc="upper left",
@@ -1200,17 +1238,22 @@ def plot_hits_curves(
             color=INK,
             fontsize=10.5,
             fontweight="semibold",
-            pad=20,
+            pad=6 + lines * DELTA_LINE_PT,
         )
-        ax.text(
-            0,
-            1.03,
-            delta_note(comparison[comparison["relation"] == relation], graphs),
-            transform=ax.transAxes,
-            color=INK_SECONDARY,
-            fontsize=8,
-            va="bottom",
-        )
+        # One line per graph under the title, the first graph on top, each
+        # keyed by a dash in its line color.
+        for j, (graph, line) in enumerate(reversed(notes[relation])):
+            for text, color, x in (("━", colors[graph], 0), (line, INK_SECONDARY, 11)):
+                ax.annotate(
+                    text,
+                    xy=(0, 1),
+                    xycoords="axes fraction",
+                    xytext=(x, 4 + j * DELTA_LINE_PT),
+                    textcoords="offset points",
+                    color=color,
+                    fontsize=8,
+                    va="bottom",
+                )
         if i % columns == 0:
             ax.set_ylabel("Share ranked ≤ k", color=INK_SECONDARY, fontsize=9.5)
         if i + columns >= len(relations):  # no panel below this one
@@ -1361,7 +1404,9 @@ def plot_model_hits(
         present(colors, predictions),
     )
     for ax, graph in zip(axes, shown):
-        draw_hits_lines(ax, predictions[predictions["graph"] == graph], colors, graph)
+        draw_hits_lines(
+            ax, predictions[predictions["graph"] == graph], colors, graph_name(graph)
+        )
     fig.savefig(path, dpi=PLOT_DPI, facecolor=SURFACE)
     plt.close(fig)
 
@@ -1384,7 +1429,7 @@ def plot_relation_hits(
     ]
     fig, axes = hits_grid(
         len(panels),
-        f"{' / '.join(PurePosixPath(kg).parts + (graph,))}: {HITS_RANGE} per relation",
+        f"{' / '.join(PurePosixPath(kg).parts + (graph_name(graph),))}: {HITS_RANGE} per relation",
         HITS_SUBTITLE,
         present(colors, predictions),
     )
@@ -1468,13 +1513,17 @@ def write_analysis(
             models = models[: len(CATEGORICAL)]
         colors = dict(zip(models, CATEGORICAL))
         shown = shown[shown["model"].isin(models)]
-        stem = "_".join(PurePosixPath(kg).parts + ("models", f"hits_at_{min(HITS_AT)}-{max(HITS_AT)}"))
+        stem = "_".join(
+            PurePosixPath(kg).parts
+            + ("models", f"hits_at_{min(HITS_AT)}-{max(HITS_AT)}")
+        )
         plot = analysis_dir / f"{stem}.png"
         plot_model_hits(shown, graphs, colors, plot)
         print(f"Wrote {plot}")
         for graph, graph_runs in shown.groupby("graph"):
             stem = "_".join(
-                PurePosixPath(kg).parts + (graph, "relations", f"hits_at_{min(HITS_AT)}-{max(HITS_AT)}")
+                PurePosixPath(kg).parts
+                + (graph, "relations", f"hits_at_{min(HITS_AT)}-{max(HITS_AT)}")
             )
             plot = analysis_dir / f"{stem}.png"
             plot_relation_hits(graph_runs, colors, plot)
