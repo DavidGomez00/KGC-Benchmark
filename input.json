@@ -1,6 +1,6 @@
 {
-  "kg_path": "../.data/french_royalty/pygraft/french_royalty.no-literals.filled.tsv",
-  "results_path": "Output/french_royalty/ours_pca=0.9",
+  "kg_path": "../.data/french_royalty/pygraft/french_royalty.pygraft.tsv",
+  "results_path": "Output/french_royalty/pygraft",
   "models": ["TransE", "TransH", "TransD", "RotatE", "ComplEx", "TuckER", "CompGCN"],
   "num_epochs": 100,
   "embedding_dim": 50,
