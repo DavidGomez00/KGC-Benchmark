@@ -107,6 +107,10 @@ python report_results.py --reference source --compare "skgg*"
 python report_results.py --help    # all options
 ```
 
+Every plot has its title and explanation in a band at the top. For a paper, where that text goes in the
+caption, add `--crop`: each analysis folder then also gets a `cropped/` subfolder with the plots without
+that band.
+
 The plots name each KG and graph by its folder unless you give it a readable name in the `FOLDER_NAMES`
 dictionary at the top of `report_results.py`, e.g. `"french_royalty": "French Royalty"`.
 

@@ -124,6 +124,7 @@ The plots show each KG folder and graph folder under a readable name from the `F
 | `--analysis-dir` | `<root>/<kg>/prediction_analysis` | Where to write each KG's per-prediction analysis (CSV files and plots) instead: `<analysis-dir>/<kg>/`. |
 | `--reference` | `source` | Graph folder that every other graph of its KG is compared with. |
 | `--compare` | `skgg*` | Graph folders compared with the reference query by query: graphs that keep the reference's entity names. Shell-style patterns, several allowed. Quote them so the shell does not expand them. |
+| `--crop` | off | Also write every plot without its caption band to a `cropped/` subfolder of its KG's analysis folder, ready for a publication. |
 
 The defaults are relative to the repository root, wherever the script is run from. Paths passed on the command line are relative to the current directory.
 
@@ -139,6 +140,8 @@ Every metric is a summary of **ranks**. For each test triple `(h, r, t)`, PyKEEN
 - **Head prediction** `(?, r, t)`: the same, scoring `(e, r, t)` for every entity `e` and recording the position of `h`.
 
 The evaluation is **filtered**, which is PyKEEN's default and the standard in the literature. Before ranking, every candidate that forms a triple already known to be true (in the training set or the test set) is removed, except the one being tested. Without this, a query such as `(Louis_XIV, child, ?)`, which has several correct answers, would penalize the model for ranking another real child above the one being tested.
+
+**The number of predictions is not the number of candidates.** A relation's count of test predictions, the `n` in the plots, is twice its number of test triples. Each prediction is still ranked among every entity of the graph, not only the entities of that relation. For example, PyGraft's `child` relation has 95 test triples, so n = 190, but each prediction is ranked among about 1,086 entities. Hits@190 is therefore the share of predictions whose correct answer is in the top 190 of about 1,086, and it does not reach 1 at k = n. With CompGCN it is 0.28, against about 0.17 for a random guess, and the median correct answer ranks 435th. A Hits@k curve only reaches 1 at the graph's worst possible rank, about its number of entities.
 
 ### Where the numbers are stored
 
@@ -211,7 +214,7 @@ PyGraft names its entities `E1`, `E2`, ..., so none of its queries pair with the
 
 ### Output files
 
-Every plot keeps its title and explanation in a band at the top, exactly 180 pixels tall (1.2 inches at 150 dpi) and closed by a faint rule. Nothing else is drawn in it, so cropping the top 180 pixels leaves the bare figure for a publication, where that text belongs in the caption. For example, with ImageMagick: `mogrify -path cropped -gravity north -chop 0x180 *.png`.
+Every plot keeps its title and explanation in a band at the top, exactly 330 pixels tall (2.2 inches at 150 dpi) and closed by a faint rule. Nothing else is drawn in it, so cropping the top 330 pixels leaves the bare figure for a publication, where that text belongs in the caption. Run with `--crop` to have the script write these cropped copies to a `cropped/` subfolder of each analysis folder. They are recropped from the full plots on every run, so they never go out of date.
 
 | File | One row per | Contents |
 |---|---|---|
@@ -222,7 +225,7 @@ Every plot keeps its title and explanation in a band at the top, exactly 180 pix
 | `query_comparison.csv` | query paired between two graphs | The `query`, then for each graph (`reference_` and `compared_` columns): its number of held-out `answers`, their `mrr`, and the share of them in the top k (`hits_at_k`, for k = 1, 3, 5 and 10) |
 | `query_comparison_summary.csv` | comparison, model, group of queries and k | See the table below |
 | `relations.png` | KG | `relation_report.csv` as a chart: one row of panels per model, MRR and Hits@10 per relation, and one column per graph. Each graph keeps its color in every plot: the reference first, then the compared graphs, then the rest (e.g. source, skgg.std=1.filled, pygraft) |
-| `<model>_hits_at_k.png` | KG and model | One panel per relation and one line per graph: the share of test predictions whose true answer ranks in the top k, for every k (its height at k = 1 and k = 10 is Hits@1 and Hits@10). Under each panel's title, one line per graph gives its number of test predictions (n) and its Cliff's delta against the reference, in bold when it does not differ significantly from the reference |
+| `<model>_hits_at_k.png` | KG and model | A first panel over all relations, then one panel per relation, and one line per graph: the share of test predictions whose true answer ranks in the top k, for every k (its height at k = 1 and k = 10 is Hits@1 and Hits@10). Under each panel's title, one line per graph gives its number of test predictions (n), its Cliff's delta against the reference (δ) and the Holm-corrected Mann-Whitney p-value (p, shown as p<0.001 below 0.001), in bold when it does not differ significantly from the reference. The figure is widened past 13 inches when these lines need more room |
 | `models_hits_at_1-15.png` | KG | One panel per graph and one line per model: Hits@1 to Hits@15, to compare how fast each model's accuracy grows with k. Each model keeps its color in every plot of this kind |
 | `<model>_relations_hits_at_1-15.png` | KG and model | Hits@1 to Hits@15 of one model on every graph: a first panel over all relations, then one panel per relation, and one line per graph, in the graph colors of the other plots. Each panel gives its number of test predictions per graph, since a rare relation rests on few of them. A graph without a line in a panel doesn't have that relation |
 | `training_loss.png` | KG | One panel per model and one line per graph: the training loss of each epoch, on a log scale. Each model has its own loss function, so its panel has its own scale: compare the lines of a panel, not the panels. A loss that is still falling at the last epoch suggests more epochs would help |
@@ -251,6 +254,8 @@ Every plot keeps its title and explanation in a band at the top, exactly 180 pix
 - It uses every test prediction of the relation in each graph, not only the queries held out in both.
 - It needs no shared entities, so it compares the reference with every other graph of the KG, PyGraft included. A relation is compared when both graphs have it; `type` exists only in PyGraft's graph, so it is not compared.
 
+Each graph pair and model also gets a row with `relation` = `all`, which compares all the test predictions of the two graphs. These include the relations only one graph has, such as PyGraft's `type`, so they match the "all relations" panel of `<model>_hits_at_k.png`.
+
 The graphs have different numbers of entities (PyGraft 1,089, source 2,038), so a raw rank of 500 is a random guess in one and above random in the other (see [Comparing metrics across graphs](#comparing-metrics-across-graphs)). The distribution tests therefore use the **normalized rank** `(rank − 1) / (candidates − 1)`: 0 means ranked first, 1 means ranked last, and a random guess averages 0.5. PyKEEN's AMRI (`adjusted_arithmetic_mean_rank_index`) is 1 − 2 × their mean, when every query has the same number of candidates.
 
 | Column | Meaning |
@@ -259,13 +264,113 @@ The graphs have different numbers of entities (PyGraft 1,089, source 2,038), so 
 | `reference_mrr`, `compared_mrr`, `mrr_difference` | MRR of the relation in each graph, and compared minus reference. |
 | `mrr_difference_low`, `mrr_difference_high` | 95% bootstrap interval of `mrr_difference` (2,000 resamples of each graph's predictions, fixed seed). An interval without 0 means the MRR difference is unlikely to be chance. |
 | `reference_hits_at_10`, `compared_hits_at_10` | Hits@10 of the relation in each graph. |
-| `cliffs_delta` | The chance that a prediction of the compared graph ranks better than one of the reference graph, minus the reverse, on normalized ranks. From −1 (the compared graph always ranks worse) to +1 (always better); 0 means neither tends to rank better. |
+| `cliffs_delta` | The chance that a prediction of the compared graph ranks better than one of the reference graph, minus the reverse, on normalized ranks. From −1 (the compared graph always ranks worse) to +1 (always better); 0 means neither tends to rank better. See [Cliff's delta](#cliffs-delta). |
 | `effect` | The size of `cliffs_delta`: negligible below 0.147, small below 0.33, medium below 0.474, large above (Romano et al., 2006). |
 | `mannwhitney_p` | Mann-Whitney U test: does one graph tend to rank better than the other? |
 | `ks_statistic`, `ks_p` | Kolmogorov-Smirnov test: do the two rank distributions differ in any way, including in shape? The statistic is the largest gap between their Hits@k curves (on normalized ranks). |
-| `mannwhitney_p_holm`, `ks_p_holm` | The p-values after a Holm correction over the relations of the same graph pair and model. Use these to decide significance. |
+| `mannwhitney_p_holm`, `ks_p_holm` | The p-values after a Holm correction over the relations of the same graph pair and model. Use these to decide significance. See [p-values](#p-values). |
 
 The bootstrap interval and the tests can disagree. The interval is about the mean of the reciprocal ranks, which only the top of the ranking moves. The tests weigh every prediction, wherever it ranks. A relation can therefore gain MRR in a few top-ranked predictions while its distribution as a whole does not change significantly.
+
+See [Cliff's delta and p-values](#cliffs-delta-and-p-values) for how `cliffs_delta` and the p-values are computed and how to read them.
+
+## Cliff's delta and p-values
+
+The relation comparison describes each difference between two graphs with two numbers:
+
+- **Cliff's delta (δ)** answers *how large is the difference?*
+- **The p-value** answers *could the difference be chance?*
+
+Neither answers both questions, so read them together.
+
+### Cliff's delta
+
+**Meaning.** Take one test prediction of the reference graph and one of the compared graph, at random. Cliff's delta is the probability that the compared graph's prediction ranks better, minus the probability that the reference graph's prediction ranks better:
+
+```
+δ = P(compared ranks better) − P(reference ranks better)
+```
+
+It goes from −1 to +1:
+
+| δ | Meaning |
+|---|---|
+| +1 | Every prediction of the compared graph ranks better than every prediction of the reference graph |
+| 0 | Neither graph tends to rank better |
+| −1 | Every prediction of the compared graph ranks worse |
+
+For example, δ = −0.64 means that in a random pair, the compared graph ranks worse 64 percentage points more often than it ranks better.
+
+**Computation.** `compare_relations` in `report_results.py` computes it for every relation, model and pair of graphs:
+
+1. **Normalize the ranks.** Each prediction's rank becomes `(rank − 1) / (candidates − 1)`, so that graphs with different numbers of entities are on one scale (see [Comparing relations across graphs](#comparing-relations-across-graphs)).
+2. **Compare every pair.** In principle, δ compares every prediction of the reference graph with every prediction of the compared graph. It counts the pairs where the compared one ranks better, subtracts the pairs where it ranks worse, and divides by the number of pairs. A tie counts for neither side.
+3. **Take it from the Mann-Whitney U statistic.** The U statistic already counts those pairs (a tie counts as half), so the script computes `δ = 2U / (n_reference × n_compared) − 1` without building the pairs.
+
+A small example, with normalized ranks where lower is better:
+
+| | Reference 0.1 | Reference 0.3 |
+|---|---|---|
+| **Compared 0.2** | reference better | compared better |
+| **Compared 0.5** | reference better | reference better |
+
+The compared graph is better in 1 of the 4 pairs and worse in 3, so δ = (1 − 3) / 4 = −0.5.
+
+**Why this effect size.** Ranks are far from normally distributed: most fall near the top or spread over a long tail. Cliff's delta needs no assumption about their distribution, a few extreme ranks don't distort it, and it doesn't grow with the number of predictions. That last point makes relations of different sizes comparable.
+
+**How large is large.** The `effect` column labels |δ| with the bounds of Romano et al. (2006), which `EFFECT_SIZES` in `report_results.py` holds:
+
+| \|δ\| | `effect` |
+|---|---|
+| below 0.147 | negligible |
+| 0.147 to 0.33 | small |
+| 0.33 to 0.474 | medium |
+| 0.474 and above | large |
+
+**Where it is used:**
+- the `cliffs_delta` and `effect` columns of `relation_comparison.csv`
+- the δ under each panel title of `<model>_hits_at_k.png`, one line per compared graph
+
+**Limit.** δ only measures whether one graph tends to rank better. Two distributions can have δ near 0 and still differ in shape, for example when one graph ranks its predictions both higher and lower more often. The Kolmogorov-Smirnov test below detects that.
+
+### p-values
+
+**Meaning.** A test starts from a **null hypothesis**: that there is no difference between the two graphs. The p-value is the probability of observing a difference at least as large as the measured one if the null hypothesis were true. A small p-value means the data would be unlikely without a real difference, so it counts as evidence of one.
+
+A p-value does **not** say:
+- the probability that the graphs are the same
+- how large the difference is (that is δ's job)
+- that the graphs are similar when p is large. A large p-value only means that no difference was detected, which can also happen because there are too few predictions.
+
+**The tests.** Each relation, model and pair of graphs gets two tests on the normalized ranks of all its test predictions, both two-sided and both computed with SciPy:
+
+| Test | Column | Null hypothesis | What it detects |
+|---|---|---|---|
+| Mann-Whitney U (`scipy.stats.mannwhitneyu`) | `mannwhitney_p` | A prediction of one graph is as likely to rank better as worse than one of the other (δ = 0) | One graph tends to rank better |
+| Kolmogorov-Smirnov (`scipy.stats.ks_2samp`) | `ks_p` | Both graphs' ranks come from the same distribution | Any difference, including in shape. `ks_statistic` is the largest vertical gap between the two graphs' Hits@k curves on normalized ranks |
+
+The relations here have between 62 and 760 test predictions per graph, so SciPy uses its large-sample approximations rather than exact computations. `query_comparison_summary.csv` also has `spearman_p`, the p-value of the Spearman correlation (null hypothesis: no correlation between the two graphs' per-query MRRs). It is not corrected as described below.
+
+**Correction for multiple tests.** Every graph pair and model is tested on each of its relations, 7 for French Royalty. At a threshold of 0.05, each test has a 5% chance of a false positive, so with 7 tests the chance that at least one is a false positive is much higher. The **Holm correction** keeps that chance at 5% for the whole family of tests:
+
+1. Sort the family's m p-values from smallest to largest.
+2. Multiply the i-th smallest by m − i + 1: the smallest by m, the next by m − 1, and so on.
+3. Never let a corrected value fall below the one before it, and cap the values at 1.
+
+For example, 0.01, 0.02 and 0.04 become 0.03, 0.04 and 0.04. A family is all the relations of one KG, compared graph and model. The `all` row is a family of its own, a single test, so its corrected p-value equals its raw one. The corrected values are in `mannwhitney_p_holm` and `ks_p_holm`. Use these, not the raw p-values, to decide significance. Holm is less strict than the better-known Bonferroni correction (which multiplies every p-value by m) and gives the same guarantee.
+
+**Where it is used.** A difference is **significant** when its Holm-corrected p-value is below 0.05, the `SIGNIFICANCE` setting in `report_results.py`. In `<model>_hits_at_k.png`, each graph's line shows `mannwhitney_p_holm` as p, and the line is **bold** when it is 0.05 or more: no significant difference from the reference was detected for that relation. The KS p-values are only reported in `relation_comparison.csv`.
+
+### Reading δ and p together
+
+| p (Holm) | \|δ\| | Reading |
+|---|---|---|
+| below 0.05 | large | A clear, real difference |
+| below 0.05 | negligible | A real but tiny difference. This is common with many predictions, where even small differences become significant |
+| 0.05 or more | negligible | No difference detected, and any difference is small. This is the strongest evidence of similarity these columns give |
+| 0.05 or more | not negligible | Inconclusive: there may be a difference, but too few predictions to tell. For example, `father` for SKGG (PCA 0.9) with CompGCN has only 62 predictions |
+
+Showing that two graphs behave alike needs an equivalence test, which the project does not run yet. See the [backlog](backlog.md).
 
 ## Requirements
 

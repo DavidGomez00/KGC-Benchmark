@@ -61,12 +61,14 @@ only compared with each other:
                                      Hits@1 to Hits@15 per relation, one line per graph
     training_loss.png                training loss per model, one line per graph
     <compared>_<model>.png           rank distributions and rank transitions
+    cropped/                         with --crop: every plot without its caption band
 
 Usage:
 
     python report_results.py
     python report_results.py --root Output --output Output/metrics_report.csv
     python report_results.py --reference source --compare "skgg*" --analysis-dir analysis
+    python report_results.py --crop
 """
 
 from __future__ import annotations
@@ -74,6 +76,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import textwrap
 from collections import defaultdict
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
@@ -87,6 +90,7 @@ from matplotlib.colors import LinearSegmentedColormap, to_rgb
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, PathPatch
 from matplotlib.ticker import FuncFormatter, LogLocator, PercentFormatter
+from PIL import Image
 from pykeen.triples import TriplesFactory
 from scipy.stats import ks_2samp, mannwhitneyu, spearmanr
 
@@ -95,6 +99,9 @@ DEFAULT_ROOT = SCRIPT_DIR / "Output"
 DEFAULT_OUTPUT = DEFAULT_ROOT / "metrics_report.csv"
 # The folder of each KG's per-prediction analysis, inside the KG's folder.
 ANALYSIS_FOLDER = "prediction_analysis"
+# Subfolder of a KG's analysis folder for the plots without their caption band
+# (--crop).
+CROPPED_FOLDER = "cropped"
 
 
 # pykeen's evaluation report is sliced by rank_type ("head"/"tail"/"both")
@@ -128,6 +135,10 @@ FOLDER_NAMES = {
 HITS_AT = tuple(range(1, 16))
 HITS_COLUMNS = [f"hits_at_{k}" for k in HITS_AT]
 HITS_RANGE = f"Hits@{min(HITS_AT)} to Hits@{max(HITS_AT)}"
+# The `relation` of the comparisons over all of a graph's test predictions,
+# and the title of their plot panels.
+ALL_RELATIONS = "all"
+ALL_RELATIONS_TITLE = "all relations"
 # The k of the headline Hits@k in the relation plots, the relation comparison
 # and the comparison plots.
 HEADLINE_K = 10
@@ -217,17 +228,26 @@ SEQUENTIAL = LinearSegmentedColormap.from_list(
 BAR_WIDTH_PX = 24
 BAR_GAP_PX = 2
 BAR_RADIUS_PX = 4
-# Height of one δ line above a Hits@k curve panel, in points.
+# Height of one δ line above a Hits@k curve panel, in points, its font size,
+# and the gap between its name, count and delta columns, in points.
 DELTA_LINE_PT = 11
+NOTE_FONT_SIZE = 8
+NOTE_COLUMN_GAP_PT = 6
 # Height of the band at the top of every figure that holds its title and
-# explanation, in inches: CAPTION_HEIGHT * PLOT_DPI = 180 pixels. Nothing
-# else is drawn in it, so cropping it off leaves the bare figure for a
-# publication, where that text goes in the caption.
-CAPTION_HEIGHT = 1.2
-HITS_SUBTITLE = (
-    "Share of test predictions whose true answer ranks in the top k, head and tail predictions "
-    "pooled.\nHits@k never decreases with k. A steep stretch of a line means many true answers "
-    "rank around that k."
+# caption, in inches: CAPTION_HEIGHT * PLOT_DPI = 330 pixels, room for a
+# caption of CAPTION_LINES lines. Nothing else is drawn in it, so cropping it
+# off leaves the bare figure for a publication, where that text goes in the
+# caption.
+CAPTION_HEIGHT = 2.2
+# Longest caption line, in characters, for readability, and the most lines a
+# caption can have to fit its band.
+CAPTION_LINE_CHARS = 120
+CAPTION_LINES = 7
+# How the Hits@k of every plot is computed, for their captions.
+HITS_DEFINITION = (
+    "Hits@k is the fraction of test predictions (head and tail pooled) whose correct "
+    "entity ranks in the top k of all candidates, under filtered ranking with ties at "
+    "their mean rank."
 )
 
 
@@ -512,7 +532,9 @@ def kg_name(kg: str, *rest: str) -> str:
     A KG's folders as the plot titles show them, followed by `rest` as is,
     e.g. "French Royalty / TuckER" for `french_royalty` and "TuckER".
     """
-    return " / ".join([folder_name(part) for part in PurePosixPath(kg).parts] + list(rest))
+    return " / ".join(
+        [folder_name(part) for part in PurePosixPath(kg).parts] + list(rest)
+    )
 
 
 def is_compared(graph: str, reference: str, patterns: list[str]) -> bool:
@@ -688,7 +710,8 @@ def compare_relations(predictions: pd.DataFrame, reference: str) -> pd.DataFrame
     """
     Compare each relation's test predictions in the reference graph with
     those in every other graph of the same KG (`predictions` with the `kg`
-    and `graph` columns of `split_dataset`), for each model trained on both.
+    and `graph` columns of `split_dataset`), for each model trained on both,
+    and all their test predictions as one more relation, ALL_RELATIONS.
     Unlike `compare_queries`, this needs no shared entities, so PyGraft is
     compared too, and it uses every test prediction.
 
@@ -698,67 +721,81 @@ def compare_relations(predictions: pd.DataFrame, reference: str) -> pd.DataFrame
     negative when the compared graph does worse; the Mann-Whitney test asks
     whether one graph tends to rank better, the KS test whether the
     distributions differ at all. Their p-values are Holm-adjusted over the
-    relations of each graph pair and model.
+    relations of each graph pair and model; the ALL_RELATIONS test is a
+    family of its own, so its adjusted p-value is its p-value.
     """
     rng = np.random.default_rng(BOOTSTRAP_SEED)
     k = HEADLINE_K
     predictions = predictions.assign(normalized_rank=normalized_rank(predictions))
-    rows = []
+    pairs, pooled = [], []
     for (kg, model), runs in predictions.groupby(["kg", "model"]):
         ref = runs[runs["graph"] == reference]
         for compared, cmp in runs[runs["graph"] != reference].groupby("graph"):
             for relation in sorted(set(ref["relation"]) & set(cmp["relation"])):
                 x = ref[ref["relation"] == relation]
                 y = cmp[cmp["relation"] == relation]
-                # U counts the pairs where the reference ranks further down
-                # than the compared graph, i.e. where the compared one is better.
-                mann_whitney = mannwhitneyu(
-                    x["normalized_rank"], y["normalized_rank"], alternative="two-sided"
-                )
-                ks = ks_2samp(x["normalized_rank"], y["normalized_rank"])
-                delta = 2 * mann_whitney.statistic / (len(x) * len(y)) - 1
-                low, high = bootstrap_difference(
-                    x["reciprocal_rank"], y["reciprocal_rank"], rng
-                )
-                rows.append(
-                    {
-                        "kg": kg,
-                        "reference": reference,
-                        "compared": compared,
-                        "model": model,
-                        "relation": relation,
-                        "reference_predictions": len(x),
-                        "compared_predictions": len(y),
-                        "reference_mrr": x["reciprocal_rank"].mean(),
-                        "compared_mrr": y["reciprocal_rank"].mean(),
-                        "mrr_difference": (
-                            y["reciprocal_rank"].mean() - x["reciprocal_rank"].mean()
-                        ),
-                        "mrr_difference_low": low,
-                        "mrr_difference_high": high,
-                        f"reference_hits_at_{k}": x[f"hits_at_{k}"].mean(),
-                        f"compared_hits_at_{k}": y[f"hits_at_{k}"].mean(),
-                        "cliffs_delta": delta,
-                        "effect": effect_size(delta),
-                        "mannwhitney_p": mann_whitney.pvalue,
-                        "ks_statistic": ks.statistic,
-                        "ks_p": ks.pvalue,
-                    }
-                )
+                pairs.append((kg, compared, model, relation, x, y))
+            if not ref.empty:
+                pooled.append((kg, compared, model, ALL_RELATIONS, ref, cmp))
+
+    # The pooled comparisons last, so that the relations' bootstrap draws are
+    # the same with or without them.
+    rows = []
+    for kg, compared, model, relation, x, y in pairs + pooled:
+        # U counts the pairs where the reference ranks further down than the
+        # compared graph, i.e. where the compared one is better.
+        mann_whitney = mannwhitneyu(
+            x["normalized_rank"], y["normalized_rank"], alternative="two-sided"
+        )
+        ks = ks_2samp(x["normalized_rank"], y["normalized_rank"])
+        delta = 2 * mann_whitney.statistic / (len(x) * len(y)) - 1
+        low, high = bootstrap_difference(x["reciprocal_rank"], y["reciprocal_rank"], rng)
+        rows.append(
+            {
+                "kg": kg,
+                "reference": reference,
+                "compared": compared,
+                "model": model,
+                "relation": relation,
+                "reference_predictions": len(x),
+                "compared_predictions": len(y),
+                "reference_mrr": x["reciprocal_rank"].mean(),
+                "compared_mrr": y["reciprocal_rank"].mean(),
+                "mrr_difference": (
+                    y["reciprocal_rank"].mean() - x["reciprocal_rank"].mean()
+                ),
+                "mrr_difference_low": low,
+                "mrr_difference_high": high,
+                f"reference_hits_at_{k}": x[f"hits_at_{k}"].mean(),
+                f"compared_hits_at_{k}": y[f"hits_at_{k}"].mean(),
+                "cliffs_delta": delta,
+                "effect": effect_size(delta),
+                "mannwhitney_p": mann_whitney.pvalue,
+                "ks_statistic": ks.statistic,
+                "ks_p": ks.pvalue,
+            }
+        )
     if not rows:
         return pd.DataFrame(
             columns=["kg", "reference", "compared", "model", "relation"]
         )
 
     comparison = pd.DataFrame(rows)
+    pooled_rows = comparison["relation"] == ALL_RELATIONS
     for test in ("mannwhitney", "ks"):
-        family_p = comparison.groupby(["kg", "compared", "model"])[f"{test}_p"]
+        family_p = comparison.groupby(["kg", "compared", "model", pooled_rows])[
+            f"{test}_p"
+        ]
         comparison.insert(
             comparison.columns.get_loc(f"{test}_p") + 1,
             f"{test}_p_holm",
             family_p.transform(holm),
         )
-    return comparison
+    # Each pooled row after the relations of its graph pair and model.
+    order = comparison.assign(pooled=pooled_rows).sort_values(
+        ["kg", "model", "compared", "pooled"], kind="stable"
+    )
+    return comparison.loc[order.index].reset_index(drop=True)
 
 
 def rank_buckets(ranks: pd.Series) -> pd.Series:
@@ -823,7 +860,15 @@ def draw_caption(fig, height: float, x: float, title: str, subtitle: str) -> Non
     CAPTION_HEIGHT inches of a figure `height` inches tall, from `x` (a
     fraction of the width), and close the band with a hairline rule just
     above its lower edge, so that cropping the band removes the rule too.
+    The subtitle is wrapped at CAPTION_LINE_CHARS characters, never at a
+    no-break space (\\u00a0), which keeps a value with its symbol.
     """
+    lines = textwrap.wrap(subtitle, CAPTION_LINE_CHARS, break_on_hyphens=False)
+    if len(lines) > CAPTION_LINES:
+        print(
+            f"warning: the caption of '{title}' has {len(lines)} lines, its band "
+            f"fits {CAPTION_LINES}"
+        )
     fig.text(
         x,
         1 - 0.3 / height,
@@ -836,7 +881,7 @@ def draw_caption(fig, height: float, x: float, title: str, subtitle: str) -> Non
     fig.text(
         x,
         1 - 0.68 / height,
-        subtitle,
+        "\n".join(lines),
         color=INK_SECONDARY,
         fontsize=9.5,
         va="top",
@@ -844,7 +889,13 @@ def draw_caption(fig, height: float, x: float, title: str, subtitle: str) -> Non
     )
     rule = 1 - (CAPTION_HEIGHT - 0.04) / height
     fig.add_artist(
-        Line2D([0, 1], [rule, rule], transform=fig.transFigure, color=GRIDLINE, linewidth=PX)
+        Line2D(
+            [0, 1],
+            [rule, rule],
+            transform=fig.transFigure,
+            color=GRIDLINE,
+            linewidth=PX,
+        )
     )
 
 
@@ -932,15 +983,22 @@ def plot_comparison(
     rates = agreement(paired, k)
     when_accurate = rates["compared_accurate_when_reference_accurate"]
     when_inaccurate = rates["compared_accurate_when_reference_inaccurate"]
+    ref_name, cmp_name = folder_name(reference), folder_name(compared)
     draw_caption(
         fig,
         height,
         0.07,
-        f"{kg_name(kg, model)}: {folder_name(reference)} vs {folder_name(compared)}",
-        f"{len(paired):,} queries held out in both graphs · Spearman ρ = {fmt(rho, '.2f')} "
-        f"between their per-query MRRs\nAt Hits@{k}, {folder_name(compared)} is accurate on "
-        f"{fmt(when_accurate, '.0%')} of the queries {folder_name(reference)} gets right, and on "
-        f"{fmt(when_inaccurate, '.0%')} of those it misses",
+        f"{kg_name(kg, model)}: {ref_name} vs {cmp_name}",
+        f"Agreement between the link predictions of {model} on the two graphs. Left: "
+        "filtered rank of the correct entity over all test predictions of each graph, in "
+        f"rank buckets. Right: for the {len(paired):,} queries (h, r, ?) or (?, r, t) held "
+        f"out in both graphs, the rank bucket in {cmp_name} of the queries in each rank "
+        f"bucket of {ref_name}; a query with several held-out answers is bucketed by its "
+        "inverse MRR. The per-query MRRs of the two graphs have a Spearman correlation of "
+        f"ρ\u00a0=\u00a0{fmt(rho, '.2f')}. At Hits@{k}, {cmp_name} is accurate on "
+        f"{fmt(when_accurate, '.0%')} of the queries on which {ref_name} is accurate and on "
+        f"{fmt(when_inaccurate, '.0%')} of the others, a query being accurate when at least "
+        f"{ACCURATE_SHARE:.0%} of its answers rank in the top {k}.",
     )
 
     # Left: rank distribution of every test prediction, one column per graph and bucket.
@@ -1103,8 +1161,11 @@ def plot_relations(report: pd.DataFrame, graphs: list[str], path: Path) -> None:
         height,
         0.06,
         f"{name}: metrics per relation" if name else "Metrics per relation",
-        "Head and tail predictions pooled, as in metrics_report.csv. "
-        "A missing column: the relation is not in that graph.",
+        "Link prediction performance per relation. MRR is the mean reciprocal filtered rank "
+        "of the correct entity over the test predictions of the relation (head and tail "
+        f"pooled), and Hits@{k} the fraction of them ranked in the top {k} of all "
+        "candidates; both range from 0 to 1, higher being better. A missing column means "
+        "that the relation does not occur in that graph.",
     )
     fig.legend(
         handles=[
@@ -1153,17 +1214,25 @@ def plot_relations(report: pd.DataFrame, graphs: list[str], path: Path) -> None:
     plt.close(fig)
 
 
+def p_value(p: float) -> str:
+    """A p-value as journals print it: "p=0.034", or "p<0.001" below 0.001."""
+    if pd.isna(p):
+        return "p=n/a"
+    return "p<0.001" if p < 0.001 else f"p={p:.3f}"
+
+
 def graph_notes(
     runs: pd.DataFrame, comparison: pd.DataFrame, graphs: list[str]
-) -> list[tuple[str, str, bool]]:
+) -> list[tuple[str, tuple[str, ...], bool]]:
     """
     The number of test predictions of every graph in one relation's `runs`,
-    with its Cliff's delta against the reference from the relation's
-    `compare_relations` rows, as (graph, line, bold) triples in the order of
-    `graphs`, e.g. ("pygraft", "PyGraft  n=190  δ −0.95", False), where bold
-    marks a Holm-adjusted Mann-Whitney p of SIGNIFICANCE or more: no detectable
-    difference from the reference. The reference has no delta, so its line
-    only gives the count.
+    with its Cliff's delta against the reference and the Holm-adjusted
+    Mann-Whitney p from the relation's `compare_relations` rows, as (graph,
+    cells, bold) triples in the order of `graphs`, where the cells are the
+    name, the count, the delta and the p-value, e.g. ("pygraft", ("PyGraft",
+    "n=190", "δ −0.95", "p<0.001"), False), and bold marks a p of
+    SIGNIFICANCE or more: no detectable difference from the reference. The
+    reference is not compared, so its delta and p-value cells are empty.
     """
     counts = runs.groupby("graph").size()
     rows = comparison.set_index("compared")
@@ -1171,13 +1240,38 @@ def graph_notes(
     for graph in graphs:
         if graph not in counts.index:
             continue
-        line, bold = f"{folder_name(graph)}  n={counts[graph]:,}", False
+        delta, p, bold = "", "", False
         if graph in rows.index:
             row = rows.loc[graph]
-            line += "  δ " + f"{row['cliffs_delta']:+.2f}".replace("-", "−")
+            delta = "δ " + f"{row['cliffs_delta']:+.2f}".replace("-", "−")
+            p = p_value(row["mannwhitney_p_holm"])
             bold = row["mannwhitney_p_holm"] >= SIGNIFICANCE
-        notes.append((graph, line, bold))
+        cells = (folder_name(graph), f"n={counts[graph]:,}", delta, p)
+        notes.append((graph, cells, bold))
     return notes
+
+
+def note_columns(fig, notes: list[tuple[str, tuple, bool]], start: float) -> list[float]:
+    """
+    The x offsets in points, from a panel's left edge, where the columns of
+    `notes` (`graph_notes` triples) start, drawn in NOTE_FONT_SIZE from
+    `start`, followed by where the last one ends. Each column is as wide as
+    its widest cell, measured in bold for bold lines, plus NOTE_COLUMN_GAP_PT.
+    """
+    renderer = fig.canvas.get_renderer()
+    probe = fig.text(0, 0, "", fontsize=NOTE_FONT_SIZE)
+    widths = [0.0] * max(len(cells) for _, cells, _ in notes)
+    for _, cells, bold in notes:
+        probe.set_fontweight("bold" if bold else "normal")
+        for i, cell in enumerate(cells):
+            probe.set_text(cell)
+            pixels = probe.get_window_extent(renderer).width if cell else 0
+            widths[i] = max(widths[i], pixels * 72 / fig.dpi)
+    probe.remove()
+    offsets = [start]
+    for width in widths[:-1]:
+        offsets.append(offsets[-1] + width + NOTE_COLUMN_GAP_PT)
+    return offsets + [offsets[-1] + widths[-1]]
 
 
 def plot_hits_curves(
@@ -1189,33 +1283,40 @@ def plot_hits_curves(
 ) -> None:
     """
     Plot the Hits@k curves of one KG and model (`predictions` holds only its
-    rows, with the `kg` and `graph` columns of `split_dataset`): one panel
-    per relation and one line per graph, giving the share of predictions
-    ranked within the top k for every k, so the height at k = 1 and k = 10
-    is Hits@1 and Hits@10. Lines are colored in the order of `graphs`. Each
-    panel lists every graph's number of test predictions and its Cliff's
-    delta against the reference from `comparison`, the `compare_relations`
-    rows of this KG and model.
+    rows, with the `kg` and `graph` columns of `split_dataset`): a first
+    panel over all relations, then one panel per relation, and one line per
+    graph, giving the share of predictions ranked within the top k for every
+    k, so the height at k = 1 and k = 10 is Hits@1 and Hits@10. Lines are
+    colored in the order of `graphs`. Each panel lists every graph's number
+    of test predictions and its Cliff's delta against the reference from
+    `comparison`, the `compare_relations` rows of this KG and model.
     """
     kg, model = predictions["kg"].iat[0], predictions["model"].iat[0]
-    relations = sorted(predictions["relation"].unique())
     colors = dict(zip(graphs, CATEGORICAL))
     trained = [graph for graph in graphs if graph in set(predictions["graph"])]
     k_max = predictions["candidates"].max()
-    notes = {
-        relation: graph_notes(
+    # (title, predictions, comparison rows) of each panel.
+    panels = [
+        (
+            ALL_RELATIONS_TITLE,
+            predictions,
+            comparison[comparison["relation"] == ALL_RELATIONS],
+        )
+    ] + [
+        (
+            relation,
             predictions[predictions["relation"] == relation],
             comparison[comparison["relation"] == relation],
-            graphs,
         )
-        for relation in relations
-    }
-    lines = max(len(n) for n in notes.values())
+        for relation in sorted(predictions["relation"].unique())
+    ]
+    notes = [graph_notes(runs, deltas, graphs) for _, runs, deltas in panels]
+    lines = max(len(n) for n in notes)
 
-    # Heights in inches: the header, one row of panels per 4 relations, each
+    # Heights in inches: the header, one row of panels per 4 panels, each
     # under its title and δ lines, and the bottom axis.
     columns = 4
-    rows = -(-len(relations) // columns)
+    rows = -(-len(panels) // columns)
     header, panel, footer = CAPTION_HEIGHT + 0.95, 1.85, 0.6
     notes_height = lines * DELTA_LINE_PT / 72
     gap = 0.45 * panel + notes_height  # between rows of panels
@@ -1224,25 +1325,38 @@ def plot_hits_curves(
         rows, columns, figsize=(13, height), dpi=PLOT_DPI, squeeze=False
     )
     fig.patch.set_facecolor(SURFACE)
+    # The same columns in every panel, after the 11-point dash of each line.
+    note_x = note_columns(fig, [note for n in notes for note in n], 11)
+    # Widen the figure, 13 inches at least, until the δ lines fit their panels.
+    left, right, wspace = 0.06, 0.98, 0.18
+    panel_share = (right - left) / (columns + (columns - 1) * wspace)
+    fig.set_size_inches(max(13, note_x[-1] / 72 / panel_share), height)
     fig.subplots_adjust(
-        left=0.06,
-        right=0.98,
+        left=left,
+        right=right,
         top=1 - (header + notes_height) / height,
         bottom=footer / height,
-        wspace=0.18,
+        wspace=wspace,
         hspace=gap / panel,
     )
 
+    ref_name = folder_name(reference)
     subtitle = (
-        "Share of test predictions whose true answer ranks in the top k: "
-        "the height at k = 1 and k = 10 is Hits@1 and Hits@10; "
-        "n: test predictions per graph."
+        f"Cumulative distribution of the rank of the correct entity in the test predictions "
+        f"of {model} on a logarithmic rank axis, over all relations (first panel) and per "
+        f"relation, so that the height of a curve at k is its Hits@k. {HITS_DEFINITION} "
+        "Curves that rise earlier indicate better link "
+        "prediction. Under each panel title, n is the number of test predictions of each "
+        "graph"
     )
-    if not comparison.empty:
+    if comparison.empty:
+        subtitle += "."
+    else:
         subtitle += (
-            f"\nδ: Cliff's delta against {folder_name(reference)} on candidate-normalized ranks, "
-            "negative when the graph does worse; bold: no detectable difference, "
-            f"Holm-adjusted Mann-Whitney p ≥ {SIGNIFICANCE}."
+            f", δ its Cliff's delta against {ref_name} on candidate-normalized ranks, from −1 "
+            "to 1, negative when the graph ranks worse, and p the Holm-corrected p-value of a "
+            "two-sided Mann–Whitney U\u00a0test. Bold entries show no significant difference "
+            f"(p\u00a0≥\u00a0{SIGNIFICANCE})."
         )
     draw_caption(
         fig, height, 0.06, f"{kg_name(kg, model)}: Hits@k per relation", subtitle
@@ -1266,12 +1380,11 @@ def plot_hits_curves(
     )
 
     for i, ax in enumerate(axes.flat):
-        if i >= len(relations):
+        if i >= len(panels):
             ax.set_visible(False)
             continue
-        relation = relations[i]
+        title, runs, _ = panels[i]
         style_axes(ax)
-        runs = predictions[predictions["relation"] == relation]
         # The reference graph last, so that its line is drawn on top.
         for graph in reversed(trained):
             ranks = runs.loc[runs["graph"] == graph, "rank"].to_numpy()
@@ -1300,7 +1413,7 @@ def plot_hits_curves(
         ax.set_axisbelow(True)
         ax.spines["bottom"].set(visible=True, color=BASELINE, linewidth=PX)
         ax.set_title(
-            relation,
+            title,
             loc="left",
             color=INK,
             fontsize=10.5,
@@ -1308,12 +1421,13 @@ def plot_hits_curves(
             pad=6 + lines * DELTA_LINE_PT,
         )
         # One line per graph under the title, the first graph on top, each
-        # keyed by a dash in its line color.
-        for j, (graph, line, bold) in enumerate(reversed(notes[relation])):
-            for text, color, x, weight in (
+        # keyed by a dash in its line color, in the columns of `note_x`.
+        for j, (graph, cells, bold) in enumerate(reversed(notes[i])):
+            weight = "bold" if bold else "normal"
+            for text, color, x, text_weight in [
                 ("━", colors[graph], 0, "normal"),
-                (line, INK_SECONDARY, 11, "bold" if bold else "normal"),
-            ):
+                *((cell, INK_SECONDARY, x, weight) for cell, x in zip(cells, note_x)),
+            ]:
                 ax.annotate(
                     text,
                     xy=(0, 1),
@@ -1321,13 +1435,13 @@ def plot_hits_curves(
                     xytext=(x, 4 + j * DELTA_LINE_PT),
                     textcoords="offset points",
                     color=color,
-                    fontsize=8,
-                    fontweight=weight,
+                    fontsize=NOTE_FONT_SIZE,
+                    fontweight=text_weight,
                     va="bottom",
                 )
         if i % columns == 0:
             ax.set_ylabel("Share ranked ≤ k", color=INK_SECONDARY, fontsize=9.5)
-        if i + columns >= len(relations):  # no panel below this one
+        if i + columns >= len(panels):  # no panel below this one
             ax.set_xlabel("Rank threshold k", color=INK_SECONDARY, fontsize=9.5)
 
     fig.savefig(path, dpi=PLOT_DPI, facecolor=SURFACE)
@@ -1430,9 +1544,7 @@ def draw_hits_lines(
     ax.grid(color=GRIDLINE, linewidth=PX)
     ax.set_axisbelow(True)
     ax.spines["bottom"].set(visible=True, color=BASELINE, linewidth=PX)
-    ax.set_title(
-        title, loc="left", color=INK, fontsize=10.5, fontweight="bold", pad=20
-    )
+    ax.set_title(title, loc="left", color=INK, fontsize=10.5, fontweight="bold", pad=20)
     # The models of one graph share its test split, but graphs have their own.
     counts = grouped.size()
     low, high = int(counts.min()), int(counts.max())
@@ -1471,7 +1583,10 @@ def plot_model_hits(
     fig, axes = line_grid(
         len(shown),
         f"{name}: {HITS_RANGE} per model" if name else f"{HITS_RANGE} per model",
-        HITS_SUBTITLE,
+        f"Hits@k of each knowledge graph embedding model on each graph. {HITS_DEFINITION} "
+        "Hits@k cannot decrease with k, and a steep segment means that many correct "
+        "entities rank around that k. Under each panel title, the number of test "
+        "predictions behind its lines; the models of a graph share its test split.",
         present(colors, predictions, "model"),
         "k",
         "Hits@k",
@@ -1501,14 +1616,18 @@ def plot_relation_hits(
     """
     kg, model = predictions["kg"].iat[0], predictions["model"].iat[0]
     relations = sorted(predictions["relation"].unique())
-    panels = [("all relations", predictions)] + [
+    panels = [(ALL_RELATIONS_TITLE, predictions)] + [
         (relation, predictions[predictions["relation"] == relation])
         for relation in relations
     ]
     fig, axes = line_grid(
         len(panels),
         f"{kg_name(kg, model)}: {HITS_RANGE} per relation",
-        HITS_SUBTITLE,
+        f"Hits@k of {model} on each graph, over all relations (first panel) and per "
+        f"relation. {HITS_DEFINITION} Hits@k cannot decrease with k, and a steep segment "
+        "means that many correct entities rank around that k. Under each panel title, the "
+        "number of test predictions behind its lines; lines resting on few predictions are "
+        "less reliable. A graph without a line in a panel does not contain that relation.",
         {
             folder_name(graph): color
             for graph, color in present(colors, predictions, "graph").items()
@@ -1522,9 +1641,7 @@ def plot_relation_hits(
     plt.close(fig)
 
 
-def plot_training_losses(
-    losses: pd.DataFrame, graphs: list[str], path: Path
-) -> None:
+def plot_training_losses(losses: pd.DataFrame, graphs: list[str], path: Path) -> None:
     """
     Plot the training loss of every model of one KG (`losses` holds only its
     `build_losses` rows, with the `kg` and `graph` columns of
@@ -1541,8 +1658,9 @@ def plot_training_losses(
     fig, axes = line_grid(
         len(models),
         f"{name}: training loss per model" if name else "Training loss per model",
-        "Loss of each training epoch, averaged over the training triples, on a log scale.\n"
-        "Each model has its own loss function, so compare the lines of a panel, not the panels.",
+        "Training loss per epoch on a logarithmic scale, averaged over the training triples "
+        "as reported by PyKEEN. The models use different loss functions, so the values can "
+        "be compared between the graphs of a panel but not between panels.",
         {folder_name(graph): colors[graph] for graph in trained},
         "Epoch",
         "Loss",
@@ -1579,6 +1697,22 @@ def plot_training_losses(
     plt.close(fig)
 
 
+def write_cropped(plot: Path) -> Path:
+    """
+    Save a copy of `plot` without its caption band, the top CAPTION_HEIGHT
+    inches, to the CROPPED_FOLDER next to it, for a publication, where that
+    text goes in the caption. Returns the copy's path.
+    """
+    cropped = plot.parent / CROPPED_FOLDER / plot.name
+    cropped.parent.mkdir(exist_ok=True)
+    band = round(CAPTION_HEIGHT * PLOT_DPI)
+    with Image.open(plot) as image:
+        image.crop((0, band, image.width, image.height)).save(
+            cropped, dpi=(PLOT_DPI, PLOT_DPI)
+        )
+    return cropped
+
+
 def write_analysis(
     predictions: pd.DataFrame,
     losses: pd.DataFrame,
@@ -1586,13 +1720,15 @@ def write_analysis(
     analysis_dir: Path | None,
     reference: str,
     patterns: list[str],
+    crop: bool = False,
 ) -> None:
     """
     Write the per-prediction analysis (see the module docstring) of the
     `build_predictions` ranks, with the training losses of `build_losses`,
     one folder per KG, since the graphs of a KG are only compared with each
     other: `<root>/<kg>/prediction_analysis`, or `<analysis_dir>/<kg>` when
-    `analysis_dir` is given.
+    `analysis_dir` is given. With `crop`, every plot also gets a copy without
+    its caption band in that folder's CROPPED_FOLDER.
     """
     if predictions.empty:
         print("warning: no run could be ranked, so no prediction analysis was written")
@@ -1603,7 +1739,7 @@ def write_analysis(
     for kg, kg_runs in runs.groupby("kg"):
         out = analysis_dir / kg if analysis_dir else root / kg / ANALYSIS_FOLDER
         write_kg_analysis(
-            kg_runs, losses[losses["kg"] == kg], out, reference, patterns
+            kg_runs, losses[losses["kg"] == kg], out, reference, patterns, crop
         )
 
 
@@ -1613,11 +1749,13 @@ def write_kg_analysis(
     out: Path,
     reference: str,
     patterns: list[str],
+    crop: bool = False,
 ) -> None:
     """
     Write the analysis of one KG to `out`: its `runs` (the `build_predictions`
     rows of its graphs, with the `kg` and `graph` columns of `split_dataset`)
-    and the training `losses` of its graphs, as CSV files and plots.
+    and the training `losses` of its graphs, as CSV files and plots, and with
+    `crop` a copy of every plot without its caption band (`write_cropped`).
     """
     kg = runs["kg"].iat[0]
     predictions = runs[PREDICTION_COLUMNS]
@@ -1695,6 +1833,8 @@ def write_kg_analysis(
         plot_comparison(predictions, group, plots[-1])
     for plot in plots:
         print(f"Wrote {plot}")
+        if crop:
+            print(f"Wrote {write_cropped(plot)}")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1736,6 +1876,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Sibling dataset folders compared with --reference query by query, as "
         "shell-style patterns (quote them): graphs that keep the reference's entity names",
     )
+    p.add_argument(
+        "--crop",
+        action="store_true",
+        help="Also write every plot without its caption band (title and explanation) to "
+        f"a {CROPPED_FOLDER}/ subfolder of its KG's analysis folder, for a publication",
+    )
     return p.parse_args(argv)
 
 
@@ -1765,6 +1911,7 @@ def main(argv: list[str] | None = None) -> int:
         args.analysis_dir,
         args.reference,
         args.compare,
+        args.crop,
     )
     return 0
 
