@@ -185,7 +185,7 @@ The expected score of a random model depends on how many candidate entities each
 
 ## Per-prediction analysis
 
-After writing the table, [`report_results.py`](#report_resultspy) looks at every test prediction behind it. The results of each KG go to its own folder, `Output/<kg>/prediction_analysis/` (e.g. `Output/french_royalty/prediction_analysis/`), since its graphs are only compared with each other. The CSV files hold only that KG's runs, and the plot file names below are relative to that folder.
+After writing the table, [`report_results.py`](#report_resultspy) looks at every test prediction behind it. The results of each KG go to its own folder, `Output/<kg>/prediction_analysis/` (e.g. `Output/french_royalty/prediction_analysis/`), since its graphs are only compared with each other. The CSV files hold only that KG's runs, and the file names below are relative to that folder. The plots of the whole KG are in the folder itself, and the plots of each model in a subfolder named after it, e.g. `CompGCN/`. With `--crop`, `cropped/` repeats the same layout.
 
 ### Recomputing the ranks
 
@@ -218,6 +218,7 @@ Every plot keeps its title and explanation in a band at the top, exactly 330 pix
 
 | File | One row per | Contents |
 |---|---|---|
+| `metrics_report.csv` | dataset and model | The rows of `--output` (`Output/metrics_report.csv`) for this KG only, with the same columns |
 | `predictions.csv` | test prediction of every run | `side` (the entity predicted, `head` or `tail`), the test triple, `rank`, `candidates` (the entities it was ranked among, after filtering), `reciprocal_rank`, and `hits_at_1` to `hits_at_15` (1 or 0) |
 | `relation_report.csv` | dataset, model and relation | The columns of `metrics_report.csv`, computed per relation |
 | `training_losses.csv` | dataset, model and epoch | The training `loss` of each epoch, as PyKEEN stores it in `results.json`: averaged over the training triples. Every run of the table is included, even one the analysis leaves out |
@@ -225,11 +226,11 @@ Every plot keeps its title and explanation in a band at the top, exactly 330 pix
 | `query_comparison.csv` | query paired between two graphs | The `query`, then for each graph (`reference_` and `compared_` columns): its number of held-out `answers`, their `mrr`, and the share of them in the top k (`hits_at_k`, for k = 1, 3, 5 and 10) |
 | `query_comparison_summary.csv` | comparison, model, group of queries and k | See the table below |
 | `relations.png` | KG | `relation_report.csv` as a chart: one row of panels per model, MRR and Hits@10 per relation, and one column per graph. Each graph keeps its color in every plot: the reference first, then the compared graphs, then the rest (e.g. source, skgg.std=1.filled, pygraft) |
-| `<model>_hits_at_k.png` | KG and model | A first panel over all relations, then one panel per relation, and one line per graph: the share of test predictions whose true answer ranks in the top k, for every k (its height at k = 1 and k = 10 is Hits@1 and Hits@10). Under each panel's title, one line per graph gives its number of test predictions (n), its Cliff's delta against the reference (δ) and the Holm-corrected Mann-Whitney p-value (p, shown as p<0.001 below 0.001), in bold when it does not differ significantly from the reference. The figure is widened past 13 inches when these lines need more room |
+| `<model>/<model>_hits_at_k.png` | KG and model | A first panel over all relations, then one panel per relation, and one line per graph: the share of test predictions whose true answer ranks in the top k, for every k (its height at k = 1 and k = 10 is Hits@1 and Hits@10). Under each panel's title, one line per graph gives its number of test predictions (n), its Cliff's delta against the reference (δ) and the Holm-corrected Mann-Whitney p-value (p, shown as p<0.001 below 0.001), in bold when it does not differ significantly from the reference. The figure is widened past 13 inches when these lines need more room |
 | `models_hits_at_1-15.png` | KG | One panel per graph and one line per model: Hits@1 to Hits@15, to compare how fast each model's accuracy grows with k. Each model keeps its color in every plot of this kind |
-| `<model>_relations_hits_at_1-15.png` | KG and model | Hits@1 to Hits@15 of one model on every graph: a first panel over all relations, then one panel per relation, and one line per graph, in the graph colors of the other plots. Each panel gives its number of test predictions per graph, since a rare relation rests on few of them. A graph without a line in a panel doesn't have that relation |
+| `<model>/<model>_relations_hits_at_1-15.png` | KG and model | Hits@1 to Hits@15 of one model on every graph: a first panel over all relations, then one panel per relation, and one line per graph, in the graph colors of the other plots. Each panel gives its number of test predictions per graph, since a rare relation rests on few of them. A graph without a line in a panel doesn't have that relation |
 | `training_loss.png` | KG | One panel per model and one line per graph: the training loss of each epoch, on a log scale. Each model has its own loss function, so its panel has its own scale: compare the lines of a panel, not the panels. A loss that is still falling at the last epoch suggests more epochs would help |
-| `<compared>_<model>.png` | comparison and model | Left: how the ranks of all test predictions of each graph spread over rank buckets. Right: for the paired queries, how each rank bucket of the reference graph spreads over the buckets of the compared graph |
+| `<model>/<compared>_<model>.png` | comparison and model | Left: how the ranks of all test predictions of each graph spread over rank buckets. Right: for the paired queries, how each rank bucket of the reference graph spreads over the buckets of the compared graph |
 
 `query_comparison_summary.csv` has one row per group of queries and per k (1, 3, 5 and 10). There are three kinds of group:
 

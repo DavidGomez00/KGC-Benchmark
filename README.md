@@ -93,11 +93,12 @@ Then run `python report_results.py`. It writes:
 
 - **`Output/metrics_report.csv`**: Hits@1 to Hits@15 and MRR, with one row per graph and model.
 - **`Output/<kg>/prediction_analysis/`**, one per KG (e.g. `Output/french_royalty/prediction_analysis/`): the
-  rank of every test prediction, the metrics per relation, and plots:
+  KG's rows of `metrics_report.csv`, the rank of every test prediction, the metrics per relation, and plots:
   - **Hits@1 to Hits@15**: one line per model for each graph (`models_hits_at_1-15.png`), and one line
-    per graph for each relation, one figure per model (`<model>_relations_hits_at_1-15.png`)
+    per graph for each relation, one figure per model (`<model>/<model>_relations_hits_at_1-15.png`)
   - **the training loss of every model**, one line per graph (`training_loss.png`)
   - the reference graph compared with the other versions, relation by relation and query by query
+  - the plots of each model go to a subfolder named after it, e.g. `CompGCN/`
 
 By default, the reference is the folder named `source` and it is compared query by query with the folders
 matching `skgg*`. You can change both settings:

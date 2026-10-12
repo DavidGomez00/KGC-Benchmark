@@ -48,6 +48,7 @@ Each KG's analysis is written to its own folder, `<root>/<kg>/prediction_analysi
 (or `<analysis-dir>/<kg>` with `--analysis-dir`), since a KG's graphs are
 only compared with each other:
 
+    metrics_report.csv               the metrics table's rows of this KG
     predictions.csv                  one row per test prediction, every run
     relation_report.csv              the table's metrics per relation
     training_losses.csv              one row per training epoch, every run
@@ -55,13 +56,15 @@ only compared with each other:
     query_comparison.csv             one row per query paired between two graphs
     query_comparison_summary.csv     correlation and agreement per stratum and k
     relations.png                    MRR and Hits@10 per relation, model and graph
-    <model>_hits_at_k.png            Hits@k curves per relation, one line per graph
     models_hits_at_1-15.png          Hits@1 to Hits@15 per graph, one line per model
-    <model>_relations_hits_at_1-15.png
-                                     Hits@1 to Hits@15 per relation, one line per graph
     training_loss.png                training loss per model, one line per graph
-    <compared>_<model>.png           rank distributions and rank transitions
-    cropped/                         with --crop: every plot without its caption band
+    <model>/                         the plots of one model:
+        <model>_hits_at_k.png        Hits@k curves per relation, one line per graph
+        <model>_relations_hits_at_1-15.png
+                                     Hits@1 to Hits@15 per relation, one line per graph
+        <compared>_<model>.png       rank distributions and rank transitions
+    cropped/                         with --crop: every plot without its caption
+                                     band, in the same folders
 
 Usage:
 
@@ -96,7 +99,10 @@ from scipy.stats import ks_2samp, mannwhitneyu, spearmanr
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_ROOT = SCRIPT_DIR / "Output"
-DEFAULT_OUTPUT = DEFAULT_ROOT / "metrics_report.csv"
+# The metrics table, written to DEFAULT_OUTPUT (--output) for every KG and to
+# each KG's analysis folder for that KG.
+REPORT_NAME = "metrics_report.csv"
+DEFAULT_OUTPUT = DEFAULT_ROOT / REPORT_NAME
 # The folder of each KG's per-prediction analysis, inside the KG's folder.
 ANALYSIS_FOLDER = "prediction_analysis"
 # Subfolder of a KG's analysis folder for the plots without their caption band
@@ -1697,14 +1703,15 @@ def plot_training_losses(losses: pd.DataFrame, graphs: list[str], path: Path) ->
     plt.close(fig)
 
 
-def write_cropped(plot: Path) -> Path:
+def write_cropped(plot: Path, out: Path) -> Path:
     """
-    Save a copy of `plot` without its caption band, the top CAPTION_HEIGHT
-    inches, to the CROPPED_FOLDER next to it, for a publication, where that
-    text goes in the caption. Returns the copy's path.
+    Save a copy of `plot`, a plot of the analysis folder `out`, without its
+    caption band, the top CAPTION_HEIGHT inches, to the same place under
+    `out`'s CROPPED_FOLDER, for a publication, where that text goes in the
+    caption. Returns the copy's path.
     """
-    cropped = plot.parent / CROPPED_FOLDER / plot.name
-    cropped.parent.mkdir(exist_ok=True)
+    cropped = out / CROPPED_FOLDER / plot.relative_to(out)
+    cropped.parent.mkdir(parents=True, exist_ok=True)
     band = round(CAPTION_HEIGHT * PLOT_DPI)
     with Image.open(plot) as image:
         image.crop((0, band, image.width, image.height)).save(
@@ -1714,6 +1721,7 @@ def write_cropped(plot: Path) -> Path:
 
 
 def write_analysis(
+    rows: list[dict],
     predictions: pd.DataFrame,
     losses: pd.DataFrame,
     root: Path,
@@ -1724,8 +1732,8 @@ def write_analysis(
 ) -> None:
     """
     Write the per-prediction analysis (see the module docstring) of the
-    `build_predictions` ranks, with the training losses of `build_losses`,
-    one folder per KG, since the graphs of a KG are only compared with each
+    `build_predictions` ranks, with the training losses of `build_losses`
+    and the KG's rows of the metrics table (`rows`), one folder per KG, since the graphs of a KG are only compared with each
     other: `<root>/<kg>/prediction_analysis`, or `<analysis_dir>/<kg>` when
     `analysis_dir` is given. With `crop`, every plot also gets a copy without
     its caption band in that folder's CROPPED_FOLDER.
@@ -1738,6 +1746,11 @@ def write_analysis(
     losses = split_dataset(losses)
     for kg, kg_runs in runs.groupby("kg"):
         out = analysis_dir / kg if analysis_dir else root / kg / ANALYSIS_FOLDER
+        kg_rows = [
+            row for row in rows if PurePosixPath(row["dataset"]).parent.as_posix() == kg
+        ]
+        write_csv(kg_rows, out / REPORT_NAME)
+        print(f"Wrote {len(kg_rows)} row(s) to {out / REPORT_NAME}")
         write_kg_analysis(
             kg_runs, losses[losses["kg"] == kg], out, reference, patterns, crop
         )
@@ -1800,11 +1813,13 @@ def write_kg_analysis(
     plots.append(out / "relations.png")
     plot_relations(report[report["graph"].isin(graphs)], graphs, plots[-1])
     shown = runs[runs["graph"].isin(graphs)]
+    # The plots of one model go to its own folder, those of the whole KG to `out`.
     for model, model_runs in shown.groupby("model"):
-        plots.append(out / f"{model}_hits_at_k.png")
+        (out / model).mkdir(exist_ok=True)
+        plots.append(out / model / f"{model}_hits_at_k.png")
         deltas = relation_comparison[relation_comparison["model"] == model]
         plot_hits_curves(model_runs, deltas, graphs, reference, plots[-1])
-        plots.append(out / f"{model}_relations_{hits_range}.png")
+        plots.append(out / model / f"{model}_relations_{hits_range}.png")
         plot_relation_hits(model_runs, dict(zip(graphs, CATEGORICAL)), plots[-1])
 
     # One model order per KG, so that each model keeps its color in the Hits@k line plots.
@@ -1829,12 +1844,13 @@ def write_kg_analysis(
         plot_training_losses(shown_losses, graphs, plots[-1])
 
     for (compared, model), group in paired.groupby(["compared", "model"]):
-        plots.append(out / f"{compared}_{model}.png")
+        (out / model).mkdir(exist_ok=True)
+        plots.append(out / model / f"{compared}_{model}.png")
         plot_comparison(predictions, group, plots[-1])
     for plot in plots:
         print(f"Wrote {plot}")
         if crop:
-            print(f"Wrote {write_cropped(plot)}")
+            print(f"Wrote {write_cropped(plot, out)}")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1905,6 +1921,7 @@ def main(argv: list[str] | None = None) -> int:
 
     losses = build_losses(args.root, rows)
     write_analysis(
+        rows,
         predictions,
         losses,
         args.root,
