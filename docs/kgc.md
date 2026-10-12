@@ -83,7 +83,7 @@ The models used so far are TransE, TransH, TransD, RotatE, ComplEx, TuckER and C
 
 ```bash
 python report_results.py                                         # source vs every skgg* folder
-python report_results.py --root Output/french_royalty --crop      # one KG, table in Output/french_royalty/
+python report_results.py --root Output/french_royalty --crop      # one KG: source vs its synthetic graphs
 python report_results.py --reference source --compare "skgg.std=*"
 ```
 
@@ -95,7 +95,7 @@ The script finds every `results.json` under `--root` and expects the layout KGC.
 <root>/<dataset...>/<model>/results.json
 ```
 
-`<dataset...>` is the `results_path` of the run, relative to `--root`. It can be more than one folder, and the `dataset` column reports it with `/`, e.g. `french_royalty/skgg.std=1.filled`. The analysis splits it in two:
+`<dataset...>` is the `results_path` of the run, relative to `--root`. It can be more than one folder, and the `dataset` column reports it with `/`, e.g. `french_royalty/skgg.std=1.filled`. When `--root` is one KG's folder, such as `Output/french_royalty`, the KG folder is still included, so the CSV files and plots are the same as the ones a run over all of `Output` writes for that KG. The analysis splits it in two:
 
 | Part | Example | Meaning |
 |---|---|---|

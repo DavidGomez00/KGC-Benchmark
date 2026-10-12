@@ -12,7 +12,8 @@ alongside the trained model, one per `<results_path>/<model>/` directory
 
 This script walks a results directory recursively
 (`<root>/<dataset...>/<model>/results.json`, where `<dataset...>` is one or
-more folders such as `french_royalty/skgg.std=1.filled`), pulls Hits@1/3/5/10 and MRR out
+more folders such as `french_royalty/skgg.std=1.filled`, named with its KG folder
+even when `<root>` is that KG's folder), pulls Hits@1/3/5/10 and MRR out
 of the "both"/"realistic" slice of each one -- "both" combines head and
 tail prediction, "realistic" is the standard filtered-ranking evaluation
 reported in the KG completion literature -- and writes one row per
@@ -256,17 +257,30 @@ HITS_DEFINITION = (
 )
 
 
-def find_results(root: Path):
+def dataset_base(root: Path) -> Path:
+    """
+    The folder that datasets are named relative to: `root`, or its parent
+    when `root` is one KG's folder, with every run in a graph folder right
+    under it (`<root>/<graph>/<model>/results.json`). A dataset is then
+    named with its KG either way, e.g. `french_royalty/source`, and the CSV
+    files are the same for a run over one KG as for a run over all of them.
+    """
+    depths = {len(p.relative_to(root).parts) for p in root.rglob("results.json")}
+    return root.absolute().parent if depths == {3} else root
+
+
+def find_results(root: Path, base: Path):
     """
     Yield (dataset, model, results_json_path) for every pykeen
     `results.json` found under `root`, assuming the
     `<root>/<dataset...>/<model>/results.json` layout that `KGC.py` produces
-    (`<dataset...>` is the `results_path` folder chain, e.g.
-    `french_royalty/skgg.std=1.filled`, reported with "/").
+    (`<dataset...>` is the `results_path` folder chain relative to `base`,
+    see `dataset_base`, e.g. `french_royalty/skgg.std=1.filled`, reported
+    with "/").
     """
-    for results_json in sorted(root.rglob("results.json")):
+    for results_json in sorted(root.absolute().rglob("results.json")):
         model_dir = results_json.parent
-        dataset = model_dir.parent.relative_to(root).as_posix()
+        dataset = model_dir.parent.relative_to(base.absolute()).as_posix()
         if dataset == ".":
             continue
         yield dataset, model_dir.name, results_json
@@ -298,9 +312,9 @@ def extract_metrics(results_json: Path) -> dict | None:
         return None
 
 
-def build_report(root: Path) -> list[dict]:
+def build_report(root: Path, base: Path) -> list[dict]:
     rows = []
-    for dataset, model, results_json in find_results(root):
+    for dataset, model, results_json in find_results(root, base):
         metrics = extract_metrics(results_json)
         if metrics is None:
             continue
@@ -308,15 +322,15 @@ def build_report(root: Path) -> list[dict]:
     return rows
 
 
-def build_losses(root: Path, rows: list[dict]) -> pd.DataFrame:
+def build_losses(base: Path, rows: list[dict]) -> pd.DataFrame:
     """
-    The training loss of every run in the table (`rows` from `build_report`),
-    one row per epoch, from the "losses" pykeen's `results.json` keeps: the
+    The training loss of every run in the table (`rows` from `build_report`,
+    their datasets relative to `base`), one row per epoch, from the "losses" pykeen's `results.json` keeps: the
     loss of each epoch, averaged over the training triples.
     """
     frames = []
     for row in rows:
-        results_json = root / row["dataset"] / row["model"] / "results.json"
+        results_json = base / row["dataset"] / row["model"] / "results.json"
         with results_json.open(encoding="utf-8") as f:
             losses = json.load(f).get("losses") or []
         frames.append(
@@ -440,16 +454,16 @@ def rank_predictions(dataset_dir: Path, model_dir: Path) -> pd.DataFrame | None:
     )
 
 
-def build_predictions(root: Path, rows: list[dict]) -> pd.DataFrame:
+def build_predictions(base: Path, rows: list[dict]) -> pd.DataFrame:
     """
     Recompute the per-prediction ranks of every run in the table (`rows`
-    from `build_report`), keeping only the runs whose ranks reproduce the
-    MRR in their results.json.
+    from `build_report`, their datasets relative to `base`), keeping only the
+    runs whose ranks reproduce the MRR in their results.json.
     """
     frames = []
     for row in rows:
         dataset, model = row["dataset"], row["model"]
-        ranks = rank_predictions(root / dataset, root / dataset / model)
+        ranks = rank_predictions(base / dataset, base / dataset / model)
         if ranks is None:
             continue
         mrr = (1 / ranks["rank"]).mean()
@@ -1720,7 +1734,7 @@ def write_analysis(
     rows: list[dict],
     predictions: pd.DataFrame,
     losses: pd.DataFrame,
-    root: Path,
+    base: Path,
     analysis_dir: Path | None,
     reference: str,
     patterns: list[str],
@@ -1730,7 +1744,8 @@ def write_analysis(
     Write the per-prediction analysis (see the module docstring) of the
     `build_predictions` ranks, with the training losses of `build_losses`
     and the KG's rows of the metrics table (`rows`), one folder per KG, since the graphs of a KG are only compared with each
-    other: `<root>/<kg>/prediction_analysis`, or `<analysis_dir>/<kg>` when
+    other: `<base>/<kg>/prediction_analysis` (`base` from `dataset_base`), or
+    `<analysis_dir>/<kg>` when
     `analysis_dir` is given. With `crop`, every plot also gets a copy without
     its caption band in that folder's CROPPED_FOLDER.
     """
@@ -1741,22 +1756,14 @@ def write_analysis(
     runs = split_dataset(predictions)
     losses = split_dataset(losses)
     for kg, kg_runs in runs.groupby("kg"):
-        out = analysis_dir / kg if analysis_dir else root / kg / ANALYSIS_FOLDER
+        out = analysis_dir / kg if analysis_dir else base / kg / ANALYSIS_FOLDER
         kg_rows = [
             row for row in rows if PurePosixPath(row["dataset"]).parent.as_posix() == kg
         ]
         write_csv(kg_rows, out / REPORT_NAME)
         print(f"Wrote {len(kg_rows)} row(s) to {out / REPORT_NAME}")
-        # When `root` is a KG's own folder, its graphs have no KG folder ("."),
-        # so the KG is named after `root`, as a run over all KGs would name it.
-        name = root.resolve().name if kg == "." else kg
         write_kg_analysis(
-            kg_runs.assign(kg=name),
-            losses[losses["kg"] == kg].assign(kg=name),
-            out,
-            reference,
-            patterns,
-            crop,
+            kg_runs, losses[losses["kg"] == kg], out, reference, patterns, crop
         )
 
 
@@ -1777,8 +1784,7 @@ def write_kg_analysis(
     kg = runs["kg"].iat[0]
     predictions = runs[PREDICTION_COLUMNS]
     relation_comparison = compare_relations(runs, reference)
-    # Both take the KG from the dataset, so they get the KG's name of `runs`.
-    paired = compare_queries(query_table(predictions), reference, patterns).assign(kg=kg)
+    paired = compare_queries(query_table(predictions), reference, patterns)
     report = relation_report(predictions)
     tables = {
         "predictions.csv": predictions,
@@ -1814,7 +1820,7 @@ def write_kg_analysis(
     hits_range = f"hits_at_{min(HITS_AT)}-{max(HITS_AT)}"
     plots = []
 
-    report = split_dataset(report).assign(kg=kg)
+    report = split_dataset(report)
     plots.append(out / "relations.png")
     plot_relations(report[report["graph"].isin(graphs)], graphs, plots[-1])
     shown = runs[runs["graph"].isin(graphs)]
@@ -1913,24 +1919,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: results directory not found: {args.root}")
         return 1
 
-    rows = build_report(args.root)
+    base = dataset_base(args.root)
+    rows = build_report(args.root, base)
     if not rows:
         print(f"error: no results.json files found under {args.root}")
         return 1
 
     # The ranks come first, since the table's Hits@k beyond results.json's come from them.
-    predictions = build_predictions(args.root, rows)
+    predictions = build_predictions(base, rows)
     add_hits_from_ranks(rows, predictions)
     output = args.output or args.root / REPORT_NAME
     write_csv(rows, output)
     print(f"Wrote {len(rows)} row(s) to {output}")
 
-    losses = build_losses(args.root, rows)
+    losses = build_losses(base, rows)
     write_analysis(
         rows,
         predictions,
         losses,
-        args.root,
+        base,
         args.analysis_dir,
         args.reference,
         args.compare,
