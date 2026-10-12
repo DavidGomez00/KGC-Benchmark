@@ -92,9 +92,11 @@ Output/
 Then run `python report_results.py`. It writes:
 
 - **`Output/metrics_report.csv`**: Hits@1 to Hits@15 and MRR, with one row per graph and model.
-- **`Output/prediction_analysis/`**: the rank of every test prediction, the metrics per relation, and plots:
-  - **Hits@1 to Hits@15, one line per model**, for each graph (`<kg>_models_hits_at_1-15.png`) and for each
-    relation of a graph (`<kg>_<graph>_relations_hits_at_1-15.png`)
+- **`Output/<kg>/prediction_analysis/`**, one per KG (e.g. `Output/french_royalty/prediction_analysis/`): the
+  rank of every test prediction, the metrics per relation, and plots:
+  - **Hits@1 to Hits@15**: one line per model for each graph (`models_hits_at_1-15.png`), and one line
+    per graph for each relation, one figure per model (`<model>_relations_hits_at_1-15.png`)
+  - **the training loss of every model**, one line per graph (`training_loss.png`)
   - the reference graph compared with the other versions, relation by relation and query by query
 
 By default, the reference is the folder named `source` and it is compared query by query with the folders
@@ -105,8 +107,8 @@ python report_results.py --reference source --compare "skgg*"
 python report_results.py --help    # all options
 ```
 
-The plots name each graph by its folder unless you give it a readable name in the `GRAPH_NAMES` dictionary at
-the top of `report_results.py`, e.g. `"skgg.pca=0.9.filled": "SKGG (PCA 0.9, filled)"`.
+The plots name each KG and graph by its folder unless you give it a readable name in the `FOLDER_NAMES`
+dictionary at the top of `report_results.py`, e.g. `"french_royalty": "French Royalty"`.
 
 ## Documentation
 
@@ -115,6 +117,7 @@ the top of `report_results.py`, e.g. `"skgg.pca=0.9.filled": "SKGG (PCA 0.9, fil
 | [KG completion and evaluation](docs/kgc.md) | How the scripts work, the metrics, the output files and the statistical tests |
 | [Configuration](docs/configuration.md) | Every key of `input.json` |
 | [Troubleshooting](docs/troubleshooting.md) | The messages the scripts print, and what to do about them |
+| [Backlog](docs/backlog.md) | Planned improvements that aren't implemented yet |
 
 ## Origin and license
 

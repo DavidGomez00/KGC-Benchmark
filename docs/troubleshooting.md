@@ -58,30 +58,30 @@ and seed that wrote its `test` file. A run left out here keeps its row in `metri
 
 **Cause:** every run hit one of the two warnings above. Only `metrics_report.csv` is written.
 
-### `note: no KG has a 'source' graph, so no relations were compared`
+### `note: <kg> has no 'source' graph, so no relations were compared`
 
 **Cause:** no folder is named like `--reference` (default `source`), or the reference graph and the other
 graphs of its KG share no model or no relation. `relation_comparison.csv` is not written, so one left in
-`--analysis-dir` by an earlier run is out of date.
+that KG's analysis folder by an earlier run is out of date.
 **Fix:** pass the name of the reference graph's folder with `--reference`.
 
-### `note: no query is held out in both 'source' and a sibling dataset matching ... with the same model`
+### `note: no query of <kg> is held out in both 'source' and a graph matching ... with the same model`
 
 **Cause:** no sibling folder matches `--compare` (default `skgg*`), no model was trained on both graphs, or
 the graphs name their entities differently (PyGraft's `E1`, `E2`, ... never pair). `query_comparison.csv`,
-`query_comparison_summary.csv` and the `<kg>_<compared>_<model>.png` plots are not written.
+`query_comparison_summary.csv` and the `<compared>_<model>.png` plots are not written.
 **Fix:** check the patterns against the folder names, and quote them so the shell does not expand them.
 
 ### `warning: <kg> has N graphs, the relation plots show the first 8`
 
 **Cause:** the plots have 8 colors. The reference comes first, then the `--compare` graphs, then the rest in
-alphabetical order, and the graphs after the eighth are left out of `<kg>_relations.png` and
-`<kg>_<model>_hits_at_k.png`. The CSV files still include them.
+alphabetical order, and the graphs after the eighth are left out of `relations.png`,
+`<model>_hits_at_k.png`, `<model>_relations_hits_at_1-15.png` and `models_hits_at_1-15.png`.
+The CSV files still include them.
 **Fix:** move the graphs you don't need in the plots out of the KG's folder.
 
 ### `warning: <kg> has N models, the Hits@k line plots show the first 8`
 
-**Cause:** the Hits@k line plots draw one line per model, in 8 colors. The models are taken in alphabetical
-order, and the ones after the eighth are left out of `<kg>_models_hits_at_1-15.png` and
-`<kg>_<graph>_relations_hits_at_1-15.png`. The CSV files still include them.
+**Cause:** `models_hits_at_1-15.png` draws one line per model, in 8 colors. The models are taken in
+alphabetical order, and the ones after the eighth are left out of it. The CSV files still include them.
 **Fix:** move the runs of the models you don't need in the plots out of the KG's folder.

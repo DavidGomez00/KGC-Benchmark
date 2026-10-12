@@ -79,7 +79,7 @@ The models used so far are TransE, TransH, TransD, RotatE, ComplEx, TuckER and C
 `report_results.py` gathers the runs of every graph into one place, in two steps:
 
 1. **The metrics table.** It writes Hits@1 to Hits@15, MRR and count, from the `both` / `realistic` slice (see [Evaluation metrics](#evaluation-metrics)), to `Output/metrics_report.csv`. There is one row per dataset and model. MRR, count and Hits@1, 3, 5 and 10 come from the run's `results.json`. PyKEEN doesn't store the other values of k, so they are counted from the ranks of the per-prediction analysis, and stay empty for a run it leaves out.
-2. **The per-prediction analysis.** It recomputes the rank of every test prediction behind that table, and compares the graphs relation by relation and query by query. The results go to `Output/prediction_analysis/`. See [Per-prediction analysis](#per-prediction-analysis).
+2. **The per-prediction analysis.** It recomputes the rank of every test prediction behind that table, and compares the graphs relation by relation and query by query. The results go to one folder per KG, `Output/<kg>/prediction_analysis/`. See [Per-prediction analysis](#per-prediction-analysis).
 
 ```bash
 python report_results.py                                         # source vs every skgg* folder
@@ -113,7 +113,7 @@ Output/french_royalty/
 
 A folder whose `results.json` can't be read, or lacks the `both` / `realistic` slice, is skipped with a warning. The rest of the report still runs.
 
-The plots show each graph under a readable name from the `GRAPH_NAMES` dictionary at the top of `report_results.py`, for example `skgg.pca=0.9.filled` as "SKGG (PCA 0.9, filled)". A folder that isn't in it is shown by its folder name. The CSV files and the plot file names always use the folder names, and so do `--reference` and `--compare`.
+The plots show each KG folder and graph folder under a readable name from the `FOLDER_NAMES` dictionary at the top of `report_results.py`, for example `french_royalty` as "French Royalty" and `skgg.pca=0.9.filled` as "SKGG (PCA 0.9)". A folder that isn't in it is shown by its folder name. The CSV files and the plot file names always use the folder names, and so do `--reference` and `--compare`.
 
 ### Options
 
@@ -121,13 +121,13 @@ The plots show each graph under a readable name from the `GRAPH_NAMES` dictionar
 |---|---|---|
 | `--root` | `Output` | Results folder to scan. |
 | `--output`, `-o` | `Output/metrics_report.csv` | Path of the metrics table. |
-| `--analysis-dir` | `Output/prediction_analysis` | Folder of the per-prediction analysis (CSV files and plots). |
+| `--analysis-dir` | `<root>/<kg>/prediction_analysis` | Where to write each KG's per-prediction analysis (CSV files and plots) instead: `<analysis-dir>/<kg>/`. |
 | `--reference` | `source` | Graph folder that every other graph of its KG is compared with. |
 | `--compare` | `skgg*` | Graph folders compared with the reference query by query: graphs that keep the reference's entity names. Shell-style patterns, several allowed. Quote them so the shell does not expand them. |
 
 The defaults are relative to the repository root, wherever the script is run from. Paths passed on the command line are relative to the current directory.
 
-Each run overwrites the files in `--analysis-dir`, but it does not delete files from earlier runs. A plot of a graph or model that is no longer under `--root` stays, and so does a comparison CSV that the new run did not write (see the `note:` messages in [troubleshooting](troubleshooting.md#report_resultspy)). Empty the folder to start clean.
+Each run overwrites the files in a KG's analysis folder, but it does not delete files from earlier runs. A plot of a graph or model that is no longer under `--root` stays, and so does a comparison CSV that the new run did not write (see the `note:` messages in [troubleshooting](troubleshooting.md#report_resultspy)). Empty the folder to start clean.
 
 ## Evaluation metrics
 
@@ -182,7 +182,7 @@ The expected score of a random model depends on how many candidate entities each
 
 ## Per-prediction analysis
 
-After writing the table, [`report_results.py`](#report_resultspy) looks at every test prediction behind it. The results go to `Output/prediction_analysis/` (`--analysis-dir`).
+After writing the table, [`report_results.py`](#report_resultspy) looks at every test prediction behind it. The results of each KG go to its own folder, `Output/<kg>/prediction_analysis/` (e.g. `Output/french_royalty/prediction_analysis/`), since its graphs are only compared with each other. The CSV files hold only that KG's runs, and the plot file names below are relative to that folder.
 
 ### Recomputing the ranks
 
@@ -211,18 +211,22 @@ PyGraft names its entities `E1`, `E2`, ..., so none of its queries pair with the
 
 ### Output files
 
+Every plot keeps its title and explanation in a band at the top, exactly 180 pixels tall (1.2 inches at 150 dpi) and closed by a faint rule. Nothing else is drawn in it, so cropping the top 180 pixels leaves the bare figure for a publication, where that text belongs in the caption. For example, with ImageMagick: `mogrify -path cropped -gravity north -chop 0x180 *.png`.
+
 | File | One row per | Contents |
 |---|---|---|
 | `predictions.csv` | test prediction of every run | `side` (the entity predicted, `head` or `tail`), the test triple, `rank`, `candidates` (the entities it was ranked among, after filtering), `reciprocal_rank`, and `hits_at_1` to `hits_at_15` (1 or 0) |
 | `relation_report.csv` | dataset, model and relation | The columns of `metrics_report.csv`, computed per relation |
+| `training_losses.csv` | dataset, model and epoch | The training `loss` of each epoch, as PyKEEN stores it in `results.json`: averaged over the training triples. Every run of the table is included, even one the analysis leaves out |
 | `relation_comparison.csv` | KG, compared graph, model and relation | Each relation in the reference graph against every other graph, see [Comparing relations across graphs](#comparing-relations-across-graphs) |
 | `query_comparison.csv` | query paired between two graphs | The `query`, then for each graph (`reference_` and `compared_` columns): its number of held-out `answers`, their `mrr`, and the share of them in the top k (`hits_at_k`, for k = 1, 3, 5 and 10) |
 | `query_comparison_summary.csv` | comparison, model, group of queries and k | See the table below |
-| `<kg>_relations.png` | KG | `relation_report.csv` as a chart: one row of panels per model, MRR and Hits@10 per relation, and one column per graph. Each graph keeps its color in every plot: the reference first, then the compared graphs, then the rest (e.g. source, skgg.std=1.filled, pygraft) |
-| `<kg>_<model>_hits_at_k.png` | KG and model | One panel per relation and one line per graph: the share of test predictions whose true answer ranks in the top k, for every k (its height at k = 1 and k = 10 is Hits@1 and Hits@10). Under each panel's title, one line per graph gives its Cliff's delta against the reference, marked `n.s.` when not significant |
-| `<kg>_models_hits_at_1-15.png` | KG | One panel per graph and one line per model: Hits@1 to Hits@15, to compare how fast each model's accuracy grows with k. Each model keeps its color in every plot of this kind |
-| `<kg>_<graph>_relations_hits_at_1-15.png` | KG and graph | The same lines, in a first panel over all relations (the graph's panel above) and then one panel per relation. Each panel gives its number of test predictions per model, since a rare relation rests on few of them |
-| `<kg>_<compared>_<model>.png` | comparison and model | Left: how the ranks of all test predictions of each graph spread over rank buckets. Right: for the paired queries, how each rank bucket of the reference graph spreads over the buckets of the compared graph |
+| `relations.png` | KG | `relation_report.csv` as a chart: one row of panels per model, MRR and Hits@10 per relation, and one column per graph. Each graph keeps its color in every plot: the reference first, then the compared graphs, then the rest (e.g. source, skgg.std=1.filled, pygraft) |
+| `<model>_hits_at_k.png` | KG and model | One panel per relation and one line per graph: the share of test predictions whose true answer ranks in the top k, for every k (its height at k = 1 and k = 10 is Hits@1 and Hits@10). Under each panel's title, one line per graph gives its number of test predictions (n) and its Cliff's delta against the reference, in bold when it does not differ significantly from the reference |
+| `models_hits_at_1-15.png` | KG | One panel per graph and one line per model: Hits@1 to Hits@15, to compare how fast each model's accuracy grows with k. Each model keeps its color in every plot of this kind |
+| `<model>_relations_hits_at_1-15.png` | KG and model | Hits@1 to Hits@15 of one model on every graph: a first panel over all relations, then one panel per relation, and one line per graph, in the graph colors of the other plots. Each panel gives its number of test predictions per graph, since a rare relation rests on few of them. A graph without a line in a panel doesn't have that relation |
+| `training_loss.png` | KG | One panel per model and one line per graph: the training loss of each epoch, on a log scale. Each model has its own loss function, so its panel has its own scale: compare the lines of a panel, not the panels. A loss that is still falling at the last epoch suggests more epochs would help |
+| `<compared>_<model>.png` | comparison and model | Left: how the ranks of all test predictions of each graph spread over rank buckets. Right: for the paired queries, how each rank bucket of the reference graph spreads over the buckets of the compared graph |
 
 `query_comparison_summary.csv` has one row per group of queries and per k (1, 3, 5 and 10). There are three kinds of group:
 

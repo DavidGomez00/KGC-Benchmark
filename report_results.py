@@ -41,28 +41,32 @@ Each relation is also compared between the reference and every other graph
 of its KG, PyGraft included, over all the relation's test predictions: the
 difference in MRR, and tests and an effect size for the rank distributions.
 
-The plots name each graph by its GRAPH_NAMES entry, or by its folder name
+The plots name each graph by its FOLDER_NAMES entry, or by its folder name
 when it has none. The CSV files and the plot file names keep folder names.
 
-The analysis is written to `--analysis-dir`:
+Each KG's analysis is written to its own folder, `<root>/<kg>/prediction_analysis`
+(or `<analysis-dir>/<kg>` with `--analysis-dir`), since a KG's graphs are
+only compared with each other:
 
     predictions.csv                  one row per test prediction, every run
     relation_report.csv              the table's metrics per relation
+    training_losses.csv              one row per training epoch, every run
     relation_comparison.csv          each relation's ranks, reference vs every graph
     query_comparison.csv             one row per query paired between two graphs
     query_comparison_summary.csv     correlation and agreement per stratum and k
-    <kg>_relations.png               MRR and Hits@10 per relation, model and graph
-    <kg>_<model>_hits_at_k.png       Hits@k curves per relation, one line per graph
-    <kg>_models_hits_at_1-15.png     Hits@1 to Hits@15 per graph, one line per model
-    <kg>_<graph>_relations_hits_at_1-15.png
-                                     Hits@1 to Hits@15 per relation, one line per model
-    <kg>_<compared>_<model>.png      rank distributions and rank transitions
+    relations.png                    MRR and Hits@10 per relation, model and graph
+    <model>_hits_at_k.png            Hits@k curves per relation, one line per graph
+    models_hits_at_1-15.png          Hits@1 to Hits@15 per graph, one line per model
+    <model>_relations_hits_at_1-15.png
+                                     Hits@1 to Hits@15 per relation, one line per graph
+    training_loss.png                training loss per model, one line per graph
+    <compared>_<model>.png           rank distributions and rank transitions
 
 Usage:
 
     python report_results.py
     python report_results.py --root Output --output Output/metrics_report.csv
-    python report_results.py --reference source --compare "skgg*" --analysis-dir Output/prediction_analysis
+    python report_results.py --reference source --compare "skgg*" --analysis-dir analysis
 """
 
 from __future__ import annotations
@@ -82,14 +86,15 @@ from matplotlib import pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, to_rgb
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, PathPatch
-from matplotlib.ticker import PercentFormatter
+from matplotlib.ticker import FuncFormatter, LogLocator, PercentFormatter
 from pykeen.triples import TriplesFactory
 from scipy.stats import ks_2samp, mannwhitneyu, spearmanr
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_ROOT = SCRIPT_DIR / "Output"
 DEFAULT_OUTPUT = DEFAULT_ROOT / "metrics_report.csv"
-DEFAULT_ANALYSIS_DIR = DEFAULT_ROOT / "prediction_analysis"
+# The folder of each KG's per-prediction analysis, inside the KG's folder.
+ANALYSIS_FOLDER = "prediction_analysis"
 
 
 # pykeen's evaluation report is sliced by rank_type ("head"/"tail"/"both")
@@ -106,10 +111,12 @@ FILTERING = "realistic"
 DEFAULT_REFERENCE = "source"
 DEFAULT_COMPARED = ["skgg*"]
 
-# Names shown in the plots for each graph's results folder (the last folder
-# of its results_path). A folder that isn't listed is shown by its folder
-# name. The CSV files and the plot file names keep the folder names.
-GRAPH_NAMES = {
+# Names shown in the plots for the folders of a results_path: the KG folders
+# (e.g. french_royalty) and each graph's own folder (e.g. source). A folder
+# that isn't listed is shown by its folder name. The CSV files and the plot
+# file names keep the folder names.
+FOLDER_NAMES = {
+    "french_royalty": "French Royalty",
     "source": "Original KG",
     "skgg.pca=0.9.filled": "SKGG (PCA 0.9)",
     "skgg.std=1.filled": "SKGG",
@@ -212,6 +219,11 @@ BAR_GAP_PX = 2
 BAR_RADIUS_PX = 4
 # Height of one δ line above a Hits@k curve panel, in points.
 DELTA_LINE_PT = 11
+# Height of the band at the top of every figure that holds its title and
+# explanation, in inches: CAPTION_HEIGHT * PLOT_DPI = 180 pixels. Nothing
+# else is drawn in it, so cropping it off leaves the bare figure for a
+# publication, where that text goes in the caption.
+CAPTION_HEIGHT = 1.2
 HITS_SUBTITLE = (
     "Share of test predictions whose true answer ranks in the top k, head and tail predictions "
     "pooled.\nHits@k never decreases with k. A steep stretch of a line means many true answers "
@@ -269,6 +281,30 @@ def build_report(root: Path) -> list[dict]:
             continue
         rows.append({"dataset": dataset, "model": model, **metrics})
     return rows
+
+
+def build_losses(root: Path, rows: list[dict]) -> pd.DataFrame:
+    """
+    The training loss of every run in the table (`rows` from `build_report`),
+    one row per epoch, from the "losses" pykeen's `results.json` keeps: the
+    loss of each epoch, averaged over the training triples.
+    """
+    frames = []
+    for row in rows:
+        results_json = root / row["dataset"] / row["model"] / "results.json"
+        with results_json.open(encoding="utf-8") as f:
+            losses = json.load(f).get("losses") or []
+        frames.append(
+            pd.DataFrame(
+                {
+                    "dataset": row["dataset"],
+                    "model": row["model"],
+                    "epoch": np.arange(1, len(losses) + 1),
+                    "loss": losses,
+                }
+            )
+        )
+    return pd.concat(frames, ignore_index=True)
 
 
 def write_csv(rows: list[dict], output: Path) -> None:
@@ -466,9 +502,17 @@ def split_dataset(table: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def graph_name(graph: str) -> str:
-    """The name the plots show for a graph's folder: its GRAPH_NAMES entry, else the folder name."""
-    return GRAPH_NAMES.get(graph, graph)
+def folder_name(folder: str) -> str:
+    """The name the plots show for a folder: its FOLDER_NAMES entry, else the folder name."""
+    return FOLDER_NAMES.get(folder, folder)
+
+
+def kg_name(kg: str, *rest: str) -> str:
+    """
+    A KG's folders as the plot titles show them, followed by `rest` as is,
+    e.g. "French Royalty / TuckER" for `french_royalty` and "TuckER".
+    """
+    return " / ".join([folder_name(part) for part in PurePosixPath(kg).parts] + list(rest))
 
 
 def is_compared(graph: str, reference: str, patterns: list[str]) -> bool:
@@ -773,6 +817,37 @@ def draw_column(ax, x: float, width: float, height: float, color: str) -> None:
     ax.add_patch(PathPatch(P(vertices, codes), facecolor=color, edgecolor="none"))
 
 
+def draw_caption(fig, height: float, x: float, title: str, subtitle: str) -> None:
+    """
+    Write a figure's title and subtitle in its caption band, the top
+    CAPTION_HEIGHT inches of a figure `height` inches tall, from `x` (a
+    fraction of the width), and close the band with a hairline rule just
+    above its lower edge, so that cropping the band removes the rule too.
+    """
+    fig.text(
+        x,
+        1 - 0.3 / height,
+        title,
+        color=INK,
+        fontsize=13,
+        fontweight="bold",
+        va="top",
+    )
+    fig.text(
+        x,
+        1 - 0.68 / height,
+        subtitle,
+        color=INK_SECONDARY,
+        fontsize=9.5,
+        va="top",
+        linespacing=1.5,
+    )
+    rule = 1 - (CAPTION_HEIGHT - 0.04) / height
+    fig.add_artist(
+        Line2D([0, 1], [rule, rule], transform=fig.transFigure, color=GRIDLINE, linewidth=PX)
+    )
+
+
 def style_axes(ax) -> None:
     """Chart surface, muted tick labels, and no ticks or frame."""
     ax.set_facecolor(SURFACE)
@@ -829,11 +904,25 @@ def plot_comparison(
     kg, reference, compared, model = paired[
         ["kg", "reference", "compared", "model"]
     ].iloc[0]
+    # Heights in inches: the caption band, the panel titles and legend, the
+    # panels, the bottom axis.
+    header, panel, footer = CAPTION_HEIGHT + 0.8, 3.36, 0.67
+    height = header + panel + footer
     fig, (left, right) = plt.subplots(
-        1, 2, figsize=(12, 5.6), dpi=PLOT_DPI, gridspec_kw={"width_ratios": [1.2, 1]}
+        1,
+        2,
+        figsize=(12, height),
+        dpi=PLOT_DPI,
+        gridspec_kw={"width_ratios": [1.2, 1]},
     )
     fig.patch.set_facecolor(SURFACE)
-    fig.subplots_adjust(left=0.07, right=0.97, top=0.72, bottom=0.12, wspace=0.28)
+    fig.subplots_adjust(
+        left=0.07,
+        right=0.97,
+        top=1 - header / height,
+        bottom=footer / height,
+        wspace=0.28,
+    )
     for ax in (left, right):
         style_axes(ax)
 
@@ -843,27 +932,15 @@ def plot_comparison(
     rates = agreement(paired, k)
     when_accurate = rates["compared_accurate_when_reference_accurate"]
     when_inaccurate = rates["compared_accurate_when_reference_inaccurate"]
-    title = " / ".join(PurePosixPath(kg).parts + (model,))
-    fig.text(
+    draw_caption(
+        fig,
+        height,
         0.07,
-        0.95,
-        f"{title}: {graph_name(reference)} vs {graph_name(compared)}",
-        color=INK,
-        fontsize=13,
-        fontweight="semibold",
-        va="top",
-    )
-    fig.text(
-        0.07,
-        0.895,
+        f"{kg_name(kg, model)}: {folder_name(reference)} vs {folder_name(compared)}",
         f"{len(paired):,} queries held out in both graphs · Spearman ρ = {fmt(rho, '.2f')} "
-        f"between their per-query MRRs\nAt Hits@{k}, {graph_name(compared)} is accurate on "
-        f"{fmt(when_accurate, '.0%')} of the queries {graph_name(reference)} gets right, and on "
+        f"between their per-query MRRs\nAt Hits@{k}, {folder_name(compared)} is accurate on "
+        f"{fmt(when_accurate, '.0%')} of the queries {folder_name(reference)} gets right, and on "
         f"{fmt(when_inaccurate, '.0%')} of those it misses",
-        color=INK_SECONDARY,
-        fontsize=9.5,
-        va="top",
-        linespacing=1.5,
     )
 
     # Left: rank distribution of every test prediction, one column per graph and bucket.
@@ -893,14 +970,14 @@ def plot_comparison(
         loc="left",
         color=INK,
         fontsize=10.5,
-        fontweight="semibold",
+        fontweight="bold",
         pad=32,
     )
     left.legend(
         handles=[
             Patch(
                 facecolor=color,
-                label=f"{graph_name(graph)} ({totals[graph]:,} predictions)",
+                label=f"{folder_name(graph)} ({totals[graph]:,} predictions)",
             )
             for graph, color in zip((reference, compared), SERIES_COLORS)
         ],
@@ -947,7 +1024,7 @@ def plot_comparison(
                 va="bottom",
                 color=color,
                 fontsize=10,
-                fontweight="semibold",
+                fontweight="bold",
             )
             right.text(
                 j + 0.5,
@@ -962,17 +1039,17 @@ def plot_comparison(
     right.set_xticks(ticks, BUCKET_LABELS)
     right.set_yticks(ticks, BUCKET_LABELS)
     right.set_xlabel(
-        f"Rank in {graph_name(compared)}", color=INK_SECONDARY, fontsize=9.5
+        f"Rank in {folder_name(compared)}", color=INK_SECONDARY, fontsize=9.5
     )
     right.set_ylabel(
-        f"Rank in {graph_name(reference)}", color=INK_SECONDARY, fontsize=9.5
+        f"Rank in {folder_name(reference)}", color=INK_SECONDARY, fontsize=9.5
     )
     right.set_title(
         "Paired queries, by rank in each graph",
         loc="left",
         color=INK,
         fontsize=10.5,
-        fontweight="semibold",
+        fontweight="bold",
         pad=32,
     )
     right.text(
@@ -1003,8 +1080,9 @@ def plot_relations(report: pd.DataFrame, graphs: list[str], path: Path) -> None:
     metrics = [("mrr", "MRR"), (f"hits_at_{k}", f"Hits@{k}")]
     colors = dict(zip(graphs, CATEGORICAL))
 
-    # Heights in inches: the header, one row of panels per model, the bottom axis.
-    header, row_height, footer = 1.6, 2.7, 0.5
+    # Heights in inches: the caption band and legend, one row of panels per
+    # model, the bottom axis.
+    header, row_height, footer = CAPTION_HEIGHT + 0.75, 2.7, 0.5
     height = header + row_height * len(models) + footer
     fig, axes = plt.subplots(
         len(models), 2, figsize=(13, height), dpi=PLOT_DPI, squeeze=False
@@ -1019,31 +1097,21 @@ def plot_relations(report: pd.DataFrame, graphs: list[str], path: Path) -> None:
         hspace=0.5,
     )
 
-    name = " / ".join(PurePosixPath(kg).parts)
-    fig.text(
+    name = kg_name(kg)
+    draw_caption(
+        fig,
+        height,
         0.06,
-        1 - 0.3 / height,
         f"{name}: metrics per relation" if name else "Metrics per relation",
-        color=INK,
-        fontsize=13,
-        fontweight="semibold",
-        va="top",
-    )
-    fig.text(
-        0.06,
-        1 - 0.68 / height,
         "Head and tail predictions pooled, as in metrics_report.csv. "
         "A missing column: the relation is not in that graph.",
-        color=INK_SECONDARY,
-        fontsize=9.5,
-        va="top",
     )
     fig.legend(
         handles=[
-            Patch(facecolor=colors[graph], label=graph_name(graph)) for graph in graphs
+            Patch(facecolor=colors[graph], label=folder_name(graph)) for graph in graphs
         ],
         loc="upper left",
-        bbox_to_anchor=(0.06, 1 - 1.0 / height),
+        bbox_to_anchor=(0.06, 1 - (CAPTION_HEIGHT + 0.25) / height),
         ncols=len(graphs),
         frameon=False,
         fontsize=9,
@@ -1077,7 +1145,7 @@ def plot_relations(report: pd.DataFrame, graphs: list[str], path: Path) -> None:
                 loc="left",
                 color=INK,
                 fontsize=10.5,
-                fontweight="semibold",
+                fontweight="bold",
                 pad=8,
             )
 
@@ -1085,22 +1153,30 @@ def plot_relations(report: pd.DataFrame, graphs: list[str], path: Path) -> None:
     plt.close(fig)
 
 
-def delta_notes(comparison: pd.DataFrame, graphs: list[str]) -> list[tuple[str, str]]:
+def graph_notes(
+    runs: pd.DataFrame, comparison: pd.DataFrame, graphs: list[str]
+) -> list[tuple[str, str, bool]]:
     """
-    The Cliff's delta of every graph against the reference, from one
-    relation's `compare_relations` rows, as (graph, line) pairs in the order
-    of `graphs`, e.g. ("pygraft", "PyGraft  δ −0.95 n.s."), where n.s. marks
-    a Holm-adjusted Mann-Whitney p of SIGNIFICANCE or more.
+    The number of test predictions of every graph in one relation's `runs`,
+    with its Cliff's delta against the reference from the relation's
+    `compare_relations` rows, as (graph, line, bold) triples in the order of
+    `graphs`, e.g. ("pygraft", "PyGraft  n=190  δ −0.95", False), where bold
+    marks a Holm-adjusted Mann-Whitney p of SIGNIFICANCE or more: no detectable
+    difference from the reference. The reference has no delta, so its line
+    only gives the count.
     """
+    counts = runs.groupby("graph").size()
     rows = comparison.set_index("compared")
     notes = []
     for graph in graphs:
+        if graph not in counts.index:
+            continue
+        line, bold = f"{folder_name(graph)}  n={counts[graph]:,}", False
         if graph in rows.index:
             row = rows.loc[graph]
-            delta = f"{row['cliffs_delta']:+.2f}".replace("-", "−")
-            significant = row["mannwhitney_p_holm"] < SIGNIFICANCE
-            line = f"{graph_name(graph)}  δ {delta}" + ("" if significant else " n.s.")
-            notes.append((graph, line))
+            line += "  δ " + f"{row['cliffs_delta']:+.2f}".replace("-", "−")
+            bold = row["mannwhitney_p_holm"] >= SIGNIFICANCE
+        notes.append((graph, line, bold))
     return notes
 
 
@@ -1117,8 +1193,9 @@ def plot_hits_curves(
     per relation and one line per graph, giving the share of predictions
     ranked within the top k for every k, so the height at k = 1 and k = 10
     is Hits@1 and Hits@10. Lines are colored in the order of `graphs`. Each
-    panel lists the Cliff's deltas against the reference from `comparison`,
-    the `compare_relations` rows of this KG and model.
+    panel lists every graph's number of test predictions and its Cliff's
+    delta against the reference from `comparison`, the `compare_relations`
+    rows of this KG and model.
     """
     kg, model = predictions["kg"].iat[0], predictions["model"].iat[0]
     relations = sorted(predictions["relation"].unique())
@@ -1126,7 +1203,11 @@ def plot_hits_curves(
     trained = [graph for graph in graphs if graph in set(predictions["graph"])]
     k_max = predictions["candidates"].max()
     notes = {
-        relation: delta_notes(comparison[comparison["relation"] == relation], graphs)
+        relation: graph_notes(
+            predictions[predictions["relation"] == relation],
+            comparison[comparison["relation"] == relation],
+            graphs,
+        )
         for relation in relations
     }
     lines = max(len(n) for n in notes.values())
@@ -1135,7 +1216,7 @@ def plot_hits_curves(
     # under its title and δ lines, and the bottom axis.
     columns = 4
     rows = -(-len(relations) // columns)
-    header, panel, footer = 2.0, 1.85, 0.6
+    header, panel, footer = CAPTION_HEIGHT + 0.95, 1.85, 0.6
     notes_height = lines * DELTA_LINE_PT / 72
     gap = 0.45 * panel + notes_height  # between rows of panels
     height = header + notes_height + rows * panel + (rows - 1) * gap + footer
@@ -1152,43 +1233,29 @@ def plot_hits_curves(
         hspace=gap / panel,
     )
 
-    fig.text(
-        0.06,
-        1 - 0.3 / height,
-        f"{' / '.join(PurePosixPath(kg).parts + (model,))}: Hits@k per relation",
-        color=INK,
-        fontsize=13,
-        fontweight="semibold",
-        va="top",
-    )
     subtitle = (
         "Share of test predictions whose true answer ranks in the top k: "
-        "the height at k = 1 and k = 10 is Hits@1 and Hits@10."
+        "the height at k = 1 and k = 10 is Hits@1 and Hits@10; "
+        "n: test predictions per graph."
     )
     if not comparison.empty:
         subtitle += (
-            f"\nδ: Cliff's delta against {graph_name(reference)} on candidate-normalized ranks, "
-            "negative when the graph does worse; n.s.: Holm-adjusted Mann-Whitney "
-            f"p ≥ {SIGNIFICANCE}."
+            f"\nδ: Cliff's delta against {folder_name(reference)} on candidate-normalized ranks, "
+            "negative when the graph does worse; bold: no detectable difference, "
+            f"Holm-adjusted Mann-Whitney p ≥ {SIGNIFICANCE}."
         )
-    fig.text(
-        0.06,
-        1 - 0.68 / height,
-        subtitle,
-        color=INK_SECONDARY,
-        fontsize=9.5,
-        va="top",
-        linespacing=1.5,
+    draw_caption(
+        fig, height, 0.06, f"{kg_name(kg, model)}: Hits@k per relation", subtitle
     )
     fig.legend(
         handles=[
             Line2D(
-                [], [], color=colors[graph], linewidth=2 * PX, label=graph_name(graph)
+                [], [], color=colors[graph], linewidth=2 * PX, label=folder_name(graph)
             )
             for graph in trained
         ],
         loc="upper left",
-        bbox_to_anchor=(0.06, 1 - 1.3 / height),
+        bbox_to_anchor=(0.06, 1 - (CAPTION_HEIGHT + 0.25) / height),
         ncols=len(trained),
         frameon=False,
         fontsize=9,
@@ -1237,13 +1304,16 @@ def plot_hits_curves(
             loc="left",
             color=INK,
             fontsize=10.5,
-            fontweight="semibold",
+            fontweight="bold",
             pad=6 + lines * DELTA_LINE_PT,
         )
         # One line per graph under the title, the first graph on top, each
         # keyed by a dash in its line color.
-        for j, (graph, line) in enumerate(reversed(notes[relation])):
-            for text, color, x in (("━", colors[graph], 0), (line, INK_SECONDARY, 11)):
+        for j, (graph, line, bold) in enumerate(reversed(notes[relation])):
+            for text, color, x, weight in (
+                ("━", colors[graph], 0, "normal"),
+                (line, INK_SECONDARY, 11, "bold" if bold else "normal"),
+            ):
                 ax.annotate(
                     text,
                     xy=(0, 1),
@@ -1252,6 +1322,7 @@ def plot_hits_curves(
                     textcoords="offset points",
                     color=color,
                     fontsize=8,
+                    fontweight=weight,
                     va="bottom",
                 )
         if i % columns == 0:
@@ -1263,17 +1334,26 @@ def plot_hits_curves(
     plt.close(fig)
 
 
-def hits_grid(panels: int, title: str, subtitle: str, colors: dict[str, str]):
+def line_grid(
+    panels: int,
+    title: str,
+    subtitle: str,
+    colors: dict[str, str],
+    xlabel: str,
+    ylabel: str,
+):
     """
-    Start a figure of `panels` Hits@k panels, 4 per row, under a title, a
-    subtitle and a line legend of `colors` (label to color). Returns the
+    Start a figure of `panels` line panels, 4 per row, under a title, a
+    subtitle and a line legend of `colors` (label to color), with `xlabel`
+    under the bottom panels and `ylabel` beside the first column. Returns the
     figure and its visible axes; the panels left over in the last row are
     hidden.
     """
     columns = min(4, panels)
     rows = -(-panels // columns)
-    # Heights in inches: the header, one row of panels, the bottom axis.
-    header, row_height, footer = 2.0, 2.7, 0.6
+    # Heights in inches: the caption band and legend, one row of panels, the
+    # bottom axis.
+    header, row_height, footer = CAPTION_HEIGHT + 0.95, 2.7, 0.6
     height = header + row_height * rows + footer
     fig, axes = plt.subplots(
         rows, columns, figsize=(13, height), dpi=PLOT_DPI, squeeze=False
@@ -1287,31 +1367,14 @@ def hits_grid(panels: int, title: str, subtitle: str, colors: dict[str, str]):
         wspace=0.18,
         hspace=0.45,
     )
-    fig.text(
-        0.06,
-        1 - 0.3 / height,
-        title,
-        color=INK,
-        fontsize=13,
-        fontweight="semibold",
-        va="top",
-    )
-    fig.text(
-        0.06,
-        1 - 0.68 / height,
-        subtitle,
-        color=INK_SECONDARY,
-        fontsize=9.5,
-        va="top",
-        linespacing=1.5,
-    )
+    draw_caption(fig, height, 0.06, title, subtitle)
     fig.legend(
         handles=[
             Line2D([], [], color=color, linewidth=2 * PX, label=label)
             for label, color in colors.items()
         ],
         loc="upper left",
-        bbox_to_anchor=(0.06, 1 - 1.3 / height),
+        bbox_to_anchor=(0.06, 1 - (CAPTION_HEIGHT + 0.25) / height),
         ncols=len(colors),
         frameon=False,
         fontsize=9,
@@ -1326,29 +1389,33 @@ def hits_grid(panels: int, title: str, subtitle: str, colors: dict[str, str]):
         ax.set_visible(False)
     for i, ax in enumerate(axes[:panels]):
         if i % columns == 0:
-            ax.set_ylabel("Hits@k", color=INK_SECONDARY, fontsize=9.5)
+            ax.set_ylabel(ylabel, color=INK_SECONDARY, fontsize=9.5)
         if i + columns >= panels:  # no panel below this one
-            ax.set_xlabel("k", color=INK_SECONDARY, fontsize=9.5)
+            ax.set_xlabel(xlabel, color=INK_SECONDARY, fontsize=9.5)
     return fig, axes[:panels]
 
 
 def draw_hits_lines(
-    ax, predictions: pd.DataFrame, colors: dict[str, str], title: str
+    ax, predictions: pd.DataFrame, by: str, colors: dict[str, str], title: str
 ) -> None:
     """
-    Draw one Hits@k panel titled `title`: one line per model of `colors`
-    that has predictions in `predictions`, through its Hits@k at every k of
-    HITS_AT, on a 0 to 1 scale shared by every panel. Under the title, the
-    number of test predictions per model, since a small panel's lines rest
-    on few of them.
+    Draw one Hits@k panel titled `title`: one line per value of the `by`
+    column ("model" or "graph") that is in `colors` and has predictions in
+    `predictions`, through its Hits@k at every k of HITS_AT, on a 0 to 1
+    scale shared by every panel. Under the title, the number of test
+    predictions behind each line, since a small panel's lines rest on few
+    of them.
     """
     style_axes(ax)
-    hits = predictions.groupby("model")[HITS_COLUMNS].mean()
-    for model, color in colors.items():
-        if model in hits.index:
+    grouped = predictions.groupby(by)
+    hits = grouped[HITS_COLUMNS].mean()
+    # The first entry of `colors` last, so that its line (the reference
+    # graph's, when comparing graphs) is drawn on top.
+    for key, color in reversed(colors.items()):
+        if key in hits.index:
             ax.plot(
                 HITS_AT,
-                hits.loc[model].to_numpy(),
+                hits.loc[key].to_numpy(),
                 color=color,
                 linewidth=2 * PX,
                 marker="o",
@@ -1364,14 +1431,16 @@ def draw_hits_lines(
     ax.set_axisbelow(True)
     ax.spines["bottom"].set(visible=True, color=BASELINE, linewidth=PX)
     ax.set_title(
-        title, loc="left", color=INK, fontsize=10.5, fontweight="semibold", pad=20
+        title, loc="left", color=INK, fontsize=10.5, fontweight="bold", pad=20
     )
-    # Every model of a graph shares its test split, so they made as many predictions.
-    count = int(predictions.groupby("model").size().max())
+    # The models of one graph share its test split, but graphs have their own.
+    counts = grouped.size()
+    low, high = int(counts.min()), int(counts.max())
+    count = f"{low:,}" if low == high else f"{low:,} to {high:,}"
     ax.text(
         0,
         1.03,
-        f"{count:,} test predictions per model",
+        f"{count} test predictions per {by}",
         transform=ax.transAxes,
         color=INK_SECONDARY,
         fontsize=8,
@@ -1379,10 +1448,12 @@ def draw_hits_lines(
     )
 
 
-def present(colors: dict[str, str], predictions: pd.DataFrame) -> dict[str, str]:
-    """The entries of `colors` whose model has predictions, for a figure's legend."""
-    models = set(predictions["model"])
-    return {model: color for model, color in colors.items() if model in models}
+def present(
+    colors: dict[str, str], predictions: pd.DataFrame, by: str
+) -> dict[str, str]:
+    """The entries of `colors` whose value of the `by` column has predictions."""
+    keys = set(predictions[by])
+    return {key: color for key, color in colors.items() if key in keys}
 
 
 def plot_model_hits(
@@ -1396,16 +1467,22 @@ def plot_model_hits(
     """
     kg = predictions["kg"].iat[0]
     shown = [graph for graph in graphs if graph in set(predictions["graph"])]
-    name = " / ".join(PurePosixPath(kg).parts)
-    fig, axes = hits_grid(
+    name = kg_name(kg)
+    fig, axes = line_grid(
         len(shown),
         f"{name}: {HITS_RANGE} per model" if name else f"{HITS_RANGE} per model",
         HITS_SUBTITLE,
-        present(colors, predictions),
+        present(colors, predictions, "model"),
+        "k",
+        "Hits@k",
     )
     for ax, graph in zip(axes, shown):
         draw_hits_lines(
-            ax, predictions[predictions["graph"] == graph], colors, graph_name(graph)
+            ax,
+            predictions[predictions["graph"] == graph],
+            "model",
+            colors,
+            folder_name(graph),
         )
     fig.savefig(path, dpi=PLOT_DPI, facecolor=SURFACE)
     plt.close(fig)
@@ -1415,125 +1492,208 @@ def plot_relation_hits(
     predictions: pd.DataFrame, colors: dict[str, str], path: Path
 ) -> None:
     """
-    Plot the Hits@k of every model of one graph (`predictions` holds only its
-    rows, with the `kg` and `graph` columns of `split_dataset`): a first panel
-    over all relations, then one panel per relation, with one line per model,
-    colored by `colors`. Each panel gives its number of test predictions per
-    model, since a rare relation's line rests on few of them.
+    Plot the Hits@k of one model on every graph of one KG (`predictions`
+    holds only its rows, with the `kg` and `graph` columns of
+    `split_dataset`): a first panel over all relations, then one panel per
+    relation, with one line per graph, colored by `colors` (graph to color,
+    in the plots' graph order). A graph without a line in a panel doesn't
+    have that relation.
     """
-    kg, graph = predictions["kg"].iat[0], predictions["graph"].iat[0]
+    kg, model = predictions["kg"].iat[0], predictions["model"].iat[0]
     relations = sorted(predictions["relation"].unique())
     panels = [("all relations", predictions)] + [
         (relation, predictions[predictions["relation"] == relation])
         for relation in relations
     ]
-    fig, axes = hits_grid(
+    fig, axes = line_grid(
         len(panels),
-        f"{' / '.join(PurePosixPath(kg).parts + (graph_name(graph),))}: {HITS_RANGE} per relation",
+        f"{kg_name(kg, model)}: {HITS_RANGE} per relation",
         HITS_SUBTITLE,
-        present(colors, predictions),
+        {
+            folder_name(graph): color
+            for graph, color in present(colors, predictions, "graph").items()
+        },
+        "k",
+        "Hits@k",
     )
     for ax, (label, runs) in zip(axes, panels):
-        draw_hits_lines(ax, runs, colors, label)
+        draw_hits_lines(ax, runs, "graph", colors, label)
+    fig.savefig(path, dpi=PLOT_DPI, facecolor=SURFACE)
+    plt.close(fig)
+
+
+def plot_training_losses(
+    losses: pd.DataFrame, graphs: list[str], path: Path
+) -> None:
+    """
+    Plot the training loss of every model of one KG (`losses` holds only its
+    `build_losses` rows, with the `kg` and `graph` columns of
+    `split_dataset`): one panel per model and one line per graph, colored in
+    the order of `graphs`, on a log scale, since the loss falls by orders of
+    magnitude. Each model has its own loss function, so each panel has its
+    own scale.
+    """
+    kg = losses["kg"].iat[0]
+    models = sorted(losses["model"].unique())
+    colors = dict(zip(graphs, CATEGORICAL))
+    trained = [graph for graph in graphs if graph in set(losses["graph"])]
+    name = kg_name(kg)
+    fig, axes = line_grid(
+        len(models),
+        f"{name}: training loss per model" if name else "Training loss per model",
+        "Loss of each training epoch, averaged over the training triples, on a log scale.\n"
+        "Each model has its own loss function, so compare the lines of a panel, not the panels.",
+        {folder_name(graph): colors[graph] for graph in trained},
+        "Epoch",
+        "Loss",
+    )
+    for ax, model in zip(axes, models):
+        style_axes(ax)
+        runs = losses[losses["model"] == model]
+        # The reference graph last, so that its line is drawn on top.
+        for graph in reversed(trained):
+            run = runs[runs["graph"] == graph]
+            if not run.empty:
+                ax.plot(
+                    run["epoch"],
+                    run["loss"],
+                    color=colors[graph],
+                    linewidth=2 * PX,
+                    solid_joinstyle="round",
+                    solid_capstyle="round",
+                )
+        ax.set_yscale("log")
+        # 1, 2 and 5 of every decade, written plainly (0.02 rather than 2×10⁻²),
+        # so that a loss that stays within one decade still gets several ticks.
+        ax.yaxis.set_major_locator(LogLocator(subs=(1, 2, 5)))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}"))
+        ax.minorticks_off()
+        ax.set_xlim(1, runs["epoch"].max())
+        ax.grid(color=GRIDLINE, linewidth=PX)
+        ax.set_axisbelow(True)
+        ax.spines["bottom"].set(visible=True, color=BASELINE, linewidth=PX)
+        ax.set_title(
+            model, loc="left", color=INK, fontsize=10.5, fontweight="bold", pad=8
+        )
     fig.savefig(path, dpi=PLOT_DPI, facecolor=SURFACE)
     plt.close(fig)
 
 
 def write_analysis(
     predictions: pd.DataFrame,
-    analysis_dir: Path,
+    losses: pd.DataFrame,
+    root: Path,
+    analysis_dir: Path | None,
     reference: str,
     patterns: list[str],
 ) -> None:
     """
     Write the per-prediction analysis (see the module docstring) of the
-    `build_predictions` ranks to `analysis_dir`.
+    `build_predictions` ranks, with the training losses of `build_losses`,
+    one folder per KG, since the graphs of a KG are only compared with each
+    other: `<root>/<kg>/prediction_analysis`, or `<analysis_dir>/<kg>` when
+    `analysis_dir` is given.
     """
     if predictions.empty:
         print("warning: no run could be ranked, so no prediction analysis was written")
         return
 
     runs = split_dataset(predictions)
+    losses = split_dataset(losses)
+    for kg, kg_runs in runs.groupby("kg"):
+        out = analysis_dir / kg if analysis_dir else root / kg / ANALYSIS_FOLDER
+        write_kg_analysis(
+            kg_runs, losses[losses["kg"] == kg], out, reference, patterns
+        )
+
+
+def write_kg_analysis(
+    runs: pd.DataFrame,
+    losses: pd.DataFrame,
+    out: Path,
+    reference: str,
+    patterns: list[str],
+) -> None:
+    """
+    Write the analysis of one KG to `out`: its `runs` (the `build_predictions`
+    rows of its graphs, with the `kg` and `graph` columns of `split_dataset`)
+    and the training `losses` of its graphs, as CSV files and plots.
+    """
+    kg = runs["kg"].iat[0]
+    predictions = runs[PREDICTION_COLUMNS]
     relation_comparison = compare_relations(runs, reference)
     paired = compare_queries(query_table(predictions), reference, patterns)
+    report = relation_report(predictions)
     tables = {
         "predictions.csv": predictions,
-        "relation_report.csv": relation_report(predictions),
+        "relation_report.csv": report,
+        "training_losses.csv": losses[["dataset", "model", "epoch", "loss"]],
     }
     if relation_comparison.empty:
-        print(f"note: no KG has a '{reference}' graph, so no relations were compared")
+        print(f"note: {kg} has no '{reference}' graph, so no relations were compared")
     else:
         tables["relation_comparison.csv"] = relation_comparison
     if paired.empty:
         print(
-            f"note: no query is held out in both '{reference}' and a sibling dataset matching "
+            f"note: no query of {kg} is held out in both '{reference}' and a graph matching "
             f"{' '.join(patterns)} with the same model, so no graphs were compared"
         )
     else:
         tables["query_comparison.csv"] = paired
         tables["query_comparison_summary.csv"] = summarize_comparison(paired)
 
-    analysis_dir.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     for name, table in tables.items():
-        table.to_csv(analysis_dir / name, index=False)
-        print(f"Wrote {len(table)} row(s) to {analysis_dir / name}")
-    reports = split_dataset(tables["relation_report.csv"])
-    for kg, kg_runs in runs.groupby("kg"):
-        # One graph order per KG, so that each graph keeps its color in every plot.
-        graphs = graph_order(kg_runs["graph"], reference, patterns)
-        if len(graphs) > len(CATEGORICAL):
-            print(
-                f"warning: {kg} has {len(graphs)} graphs, the relation plots show "
-                f"the first {len(CATEGORICAL)}"
-            )
-            graphs = graphs[: len(CATEGORICAL)]
-        stem = "_".join(PurePosixPath(kg).parts + ("relations",))
-        plot = analysis_dir / f"{stem}.png"
-        report = reports[(reports["kg"] == kg) & reports["graph"].isin(graphs)]
-        plot_relations(report, graphs, plot)
-        print(f"Wrote {plot}")
-        shown = kg_runs[kg_runs["graph"].isin(graphs)]
-        for model, model_runs in shown.groupby("model"):
-            stem = "_".join(PurePosixPath(kg).parts + (model, "hits_at_k"))
-            plot = analysis_dir / f"{stem}.png"
-            deltas = relation_comparison[
-                (relation_comparison["kg"] == kg)
-                & (relation_comparison["model"] == model)
-            ]
-            plot_hits_curves(model_runs, deltas, graphs, reference, plot)
-            print(f"Wrote {plot}")
+        table.to_csv(out / name, index=False)
+        print(f"Wrote {len(table)} row(s) to {out / name}")
 
-        # One model order per KG, so that each model keeps its color in the Hits@k line plots.
-        models = sorted(shown["model"].unique())
-        if len(models) > len(CATEGORICAL):
-            print(
-                f"warning: {kg} has {len(models)} models, the Hits@k line plots show "
-                f"the first {len(CATEGORICAL)}"
-            )
-            models = models[: len(CATEGORICAL)]
-        colors = dict(zip(models, CATEGORICAL))
-        shown = shown[shown["model"].isin(models)]
-        stem = "_".join(
-            PurePosixPath(kg).parts
-            + ("models", f"hits_at_{min(HITS_AT)}-{max(HITS_AT)}")
+    # One graph order per KG, so that each graph keeps its color in every plot.
+    graphs = graph_order(runs["graph"], reference, patterns)
+    if len(graphs) > len(CATEGORICAL):
+        print(
+            f"warning: {kg} has {len(graphs)} graphs, the relation plots show "
+            f"the first {len(CATEGORICAL)}"
         )
-        plot = analysis_dir / f"{stem}.png"
-        plot_model_hits(shown, graphs, colors, plot)
-        print(f"Wrote {plot}")
-        for graph, graph_runs in shown.groupby("graph"):
-            stem = "_".join(
-                PurePosixPath(kg).parts
-                + (graph, "relations", f"hits_at_{min(HITS_AT)}-{max(HITS_AT)}")
-            )
-            plot = analysis_dir / f"{stem}.png"
-            plot_relation_hits(graph_runs, colors, plot)
-            print(f"Wrote {plot}")
-    for (kg, compared, model), group in paired.groupby(["kg", "compared", "model"]):
-        plot = (
-            analysis_dir
-            / f"{'_'.join(PurePosixPath(kg).parts + (compared, model))}.png"
+        graphs = graphs[: len(CATEGORICAL)]
+    hits_range = f"hits_at_{min(HITS_AT)}-{max(HITS_AT)}"
+    plots = []
+
+    report = split_dataset(report)
+    plots.append(out / "relations.png")
+    plot_relations(report[report["graph"].isin(graphs)], graphs, plots[-1])
+    shown = runs[runs["graph"].isin(graphs)]
+    for model, model_runs in shown.groupby("model"):
+        plots.append(out / f"{model}_hits_at_k.png")
+        deltas = relation_comparison[relation_comparison["model"] == model]
+        plot_hits_curves(model_runs, deltas, graphs, reference, plots[-1])
+        plots.append(out / f"{model}_relations_{hits_range}.png")
+        plot_relation_hits(model_runs, dict(zip(graphs, CATEGORICAL)), plots[-1])
+
+    # One model order per KG, so that each model keeps its color in the Hits@k line plots.
+    models = sorted(shown["model"].unique())
+    if len(models) > len(CATEGORICAL):
+        print(
+            f"warning: {kg} has {len(models)} models, the Hits@k line plots show "
+            f"the first {len(CATEGORICAL)}"
         )
-        plot_comparison(predictions, group, plot)
+        models = models[: len(CATEGORICAL)]
+    plots.append(out / f"models_{hits_range}.png")
+    plot_model_hits(
+        shown[shown["model"].isin(models)],
+        graphs,
+        dict(zip(models, CATEGORICAL)),
+        plots[-1],
+    )
+
+    shown_losses = losses[losses["graph"].isin(graphs)]
+    if not shown_losses.empty:
+        plots.append(out / "training_loss.png")
+        plot_training_losses(shown_losses, graphs, plots[-1])
+
+    for (compared, model), group in paired.groupby(["compared", "model"]):
+        plots.append(out / f"{compared}_{model}.png")
+        plot_comparison(predictions, group, plots[-1])
+    for plot in plots:
         print(f"Wrote {plot}")
 
 
@@ -1559,8 +1719,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--analysis-dir",
         type=Path,
-        default=DEFAULT_ANALYSIS_DIR,
-        help="Directory for the per-prediction analysis (CSV files and plots)",
+        default=None,
+        help="Directory to write each KG's per-prediction analysis to, as "
+        f"<analysis-dir>/<kg>/; when unset, <root>/<kg>/{ANALYSIS_FOLDER}/",
     )
     p.add_argument(
         "--reference",
@@ -1596,7 +1757,15 @@ def main(argv: list[str] | None = None) -> int:
     write_csv(rows, args.output)
     print(f"Wrote {len(rows)} row(s) to {args.output}")
 
-    write_analysis(predictions, args.analysis_dir, args.reference, args.compare)
+    losses = build_losses(args.root, rows)
+    write_analysis(
+        predictions,
+        losses,
+        args.root,
+        args.analysis_dir,
+        args.reference,
+        args.compare,
+    )
     return 0
 
 
