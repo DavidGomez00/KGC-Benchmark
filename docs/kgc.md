@@ -78,12 +78,12 @@ The models used so far are TransE, TransH, TransD, RotatE, ComplEx, TuckER and C
 
 `report_results.py` gathers the runs of every graph into one place, in two steps:
 
-1. **The metrics table.** It writes Hits@1 to Hits@15, MRR and count, from the `both` / `realistic` slice (see [Evaluation metrics](#evaluation-metrics)), to `Output/metrics_report.csv`. There is one row per dataset and model. MRR, count and Hits@1, 3, 5 and 10 come from the run's `results.json`. PyKEEN doesn't store the other values of k, so they are counted from the ranks of the per-prediction analysis, and stay empty for a run it leaves out.
+1. **The metrics table.** It writes Hits@1 to Hits@15, MRR and count, from the `both` / `realistic` slice (see [Evaluation metrics](#evaluation-metrics)), to `metrics_report.csv` in the `--root` folder (`Output/` by default). There is one row per dataset and model. MRR, count and Hits@1, 3, 5 and 10 come from the run's `results.json`. PyKEEN doesn't store the other values of k, so they are counted from the ranks of the per-prediction analysis, and stay empty for a run it leaves out.
 2. **The per-prediction analysis.** It recomputes the rank of every test prediction behind that table, and compares the graphs relation by relation and query by query. The results go to one folder per KG, `Output/<kg>/prediction_analysis/`. See [Per-prediction analysis](#per-prediction-analysis).
 
 ```bash
 python report_results.py                                         # source vs every skgg* folder
-python report_results.py --root Output --output Output/metrics_report.csv
+python report_results.py --root Output/french_royalty --crop      # one KG, table in Output/french_royalty/
 python report_results.py --reference source --compare "skgg.std=*"
 ```
 
@@ -120,7 +120,7 @@ The plots show each KG folder and graph folder under a readable name from the `F
 | Option | Default | Meaning |
 |---|---|---|
 | `--root` | `Output` | Results folder to scan. |
-| `--output`, `-o` | `Output/metrics_report.csv` | Path of the metrics table. |
+| `--output`, `-o` | `<root>/metrics_report.csv` | Path of the metrics table. |
 | `--analysis-dir` | `<root>/<kg>/prediction_analysis` | Where to write each KG's per-prediction analysis (CSV files and plots) instead: `<analysis-dir>/<kg>/`. |
 | `--reference` | `source` | Graph folder that every other graph of its KG is compared with. |
 | `--compare` | `skgg*` | Graph folders compared with the reference query by query: graphs that keep the reference's entity names. Shell-style patterns, several allowed. Quote them so the shell does not expand them. |
@@ -218,7 +218,7 @@ Every plot keeps its title and explanation in a band at the top, exactly 330 pix
 
 | File | One row per | Contents |
 |---|---|---|
-| `metrics_report.csv` | dataset and model | The rows of `--output` (`Output/metrics_report.csv`) for this KG only, with the same columns |
+| `metrics_report.csv` | dataset and model | The rows of the metrics table (`--output`) for this KG only, with the same columns |
 | `predictions.csv` | test prediction of every run | `side` (the entity predicted, `head` or `tail`), the test triple, `rank`, `candidates` (the entities it was ranked among, after filtering), `reciprocal_rank`, and `hits_at_1` to `hits_at_15` (1 or 0) |
 | `relation_report.csv` | dataset, model and relation | The columns of `metrics_report.csv`, computed per relation |
 | `training_losses.csv` | dataset, model and epoch | The training `loss` of each epoch, as PyKEEN stores it in `results.json`: averaged over the training triples. Every run of the table is included, even one the analysis leaves out |

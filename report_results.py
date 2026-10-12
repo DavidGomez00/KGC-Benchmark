@@ -69,7 +69,7 @@ only compared with each other:
 Usage:
 
     python report_results.py
-    python report_results.py --root Output --output Output/metrics_report.csv
+    python report_results.py --root Output/french_royalty
     python report_results.py --reference source --compare "skgg*" --analysis-dir analysis
     python report_results.py --crop
 """
@@ -99,10 +99,9 @@ from scipy.stats import ks_2samp, mannwhitneyu, spearmanr
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_ROOT = SCRIPT_DIR / "Output"
-# The metrics table, written to DEFAULT_OUTPUT (--output) for every KG and to
-# each KG's analysis folder for that KG.
+# The metrics table, written to `<root>/REPORT_NAME` (or --output) for every
+# KG and to each KG's analysis folder for that KG.
 REPORT_NAME = "metrics_report.csv"
-DEFAULT_OUTPUT = DEFAULT_ROOT / REPORT_NAME
 # The folder of each KG's per-prediction analysis, inside the KG's folder.
 ANALYSIS_FOLDER = "prediction_analysis"
 # Subfolder of a KG's analysis folder for the plots without their caption band
@@ -947,13 +946,12 @@ def fmt(value: float, spec: str) -> str:
     return "n/a" if pd.isna(value) else format(value, spec)
 
 
-def plot_comparison(
-    predictions: pd.DataFrame, paired: pd.DataFrame, path: Path
-) -> None:
+def plot_comparison(runs: pd.DataFrame, paired: pd.DataFrame, path: Path) -> None:
     """
     Plot one comparison of two graphs with one model (`paired` holds its
-    `compare_queries` rows only). Left: how the ranks of all test
-    predictions of each graph spread over the rank buckets. Right: for the
+    `compare_queries` rows only, `runs` the KG's predictions with the `graph`
+    column of `split_dataset`). Left: how the ranks of all test predictions
+    of each graph spread over the rank buckets. Right: for the
     paired queries, where the queries of each reference bucket land in the
     compared graph, as a share of the row and a count. A query is bucketed
     by 1 / its MRR, its rank when it has a single held-out answer.
@@ -1010,11 +1008,9 @@ def plot_comparison(
     # Left: rank distribution of every test prediction, one column per graph and bucket.
     shares, totals = {}, {}
     for graph in (reference, compared):
-        run = (predictions["dataset"] == (PurePosixPath(kg) / graph).as_posix()) & (
-            predictions["model"] == model
-        )
+        run = (runs["graph"] == graph) & (runs["model"] == model)
         totals[graph] = int(run.sum())
-        shares[graph] = rank_buckets(predictions.loc[run, "rank"]).value_counts(
+        shares[graph] = rank_buckets(runs.loc[run, "rank"]).value_counts(
             normalize=True, sort=False
         )
     draw_grouped_columns(
@@ -1751,8 +1747,16 @@ def write_analysis(
         ]
         write_csv(kg_rows, out / REPORT_NAME)
         print(f"Wrote {len(kg_rows)} row(s) to {out / REPORT_NAME}")
+        # When `root` is a KG's own folder, its graphs have no KG folder ("."),
+        # so the KG is named after `root`, as a run over all KGs would name it.
+        name = root.resolve().name if kg == "." else kg
         write_kg_analysis(
-            kg_runs, losses[losses["kg"] == kg], out, reference, patterns, crop
+            kg_runs.assign(kg=name),
+            losses[losses["kg"] == kg].assign(kg=name),
+            out,
+            reference,
+            patterns,
+            crop,
         )
 
 
@@ -1773,7 +1777,8 @@ def write_kg_analysis(
     kg = runs["kg"].iat[0]
     predictions = runs[PREDICTION_COLUMNS]
     relation_comparison = compare_relations(runs, reference)
-    paired = compare_queries(query_table(predictions), reference, patterns)
+    # Both take the KG from the dataset, so they get the KG's name of `runs`.
+    paired = compare_queries(query_table(predictions), reference, patterns).assign(kg=kg)
     report = relation_report(predictions)
     tables = {
         "predictions.csv": predictions,
@@ -1809,7 +1814,7 @@ def write_kg_analysis(
     hits_range = f"hits_at_{min(HITS_AT)}-{max(HITS_AT)}"
     plots = []
 
-    report = split_dataset(report)
+    report = split_dataset(report).assign(kg=kg)
     plots.append(out / "relations.png")
     plot_relations(report[report["graph"].isin(graphs)], graphs, plots[-1])
     shown = runs[runs["graph"].isin(graphs)]
@@ -1846,7 +1851,7 @@ def write_kg_analysis(
     for (compared, model), group in paired.groupby(["compared", "model"]):
         (out / model).mkdir(exist_ok=True)
         plots.append(out / model / f"{compared}_{model}.png")
-        plot_comparison(predictions, group, plots[-1])
+        plot_comparison(runs, group, plots[-1])
     for plot in plots:
         print(f"Wrote {plot}")
         if crop:
@@ -1869,8 +1874,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output",
         "-o",
         type=Path,
-        default=DEFAULT_OUTPUT,
-        help="Output CSV path",
+        default=None,
+        help=f"Output CSV path; when unset, <root>/{REPORT_NAME}",
     )
     p.add_argument(
         "--analysis-dir",
@@ -1916,8 +1921,9 @@ def main(argv: list[str] | None = None) -> int:
     # The ranks come first, since the table's Hits@k beyond results.json's come from them.
     predictions = build_predictions(args.root, rows)
     add_hits_from_ranks(rows, predictions)
-    write_csv(rows, args.output)
-    print(f"Wrote {len(rows)} row(s) to {args.output}")
+    output = args.output or args.root / REPORT_NAME
+    write_csv(rows, output)
+    print(f"Wrote {len(rows)} row(s) to {output}")
 
     losses = build_losses(args.root, rows)
     write_analysis(
