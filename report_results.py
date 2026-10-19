@@ -42,6 +42,10 @@ Each relation is also compared between the reference and every other graph
 of its KG, PyGraft included, over all the relation's test predictions: the
 difference in MRR, and tests and an effect size for the rank distributions.
 
+The reference is also compared with every other graph of its KG as a
+benchmark: how the two rank the models trained on both, by Hits@k and by
+MRR, as a Kendall's tau per metric (see kendall_tau.py).
+
 The plots name each graph by its FOLDER_NAMES entry, or by its folder name
 when it has none. The CSV files and the plot file names keep folder names.
 
@@ -56,6 +60,7 @@ only compared with each other:
     relation_comparison.csv          each relation's ranks, reference vs every graph
     query_comparison.csv             one row per query paired between two graphs
     query_comparison_summary.csv     correlation and agreement per stratum and k
+    ranking_agreement.csv            Kendall's tau of the model rankings, reference vs every graph
     relations.png                    MRR and Hits@10 per relation, model and graph
     models_hits_at_1-15.png          Hits@1 to Hits@15 per graph, one line per model
     training_loss.png                training loss per model, one line per graph
@@ -99,6 +104,7 @@ from pykeen.triples import TriplesFactory
 from scipy.stats import ks_2samp, mannwhitneyu, spearmanr
 
 from cliffs_delta import cliffs_delta, effect_size
+from kendall_tau import ranking_agreement
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_ROOT = SCRIPT_DIR / "Output"
@@ -159,6 +165,11 @@ HEADLINE_K = 10
 # comparison tables stay readable.
 COMPARISON_HITS_AT = (1, 3, 5, 10)
 COMPARISON_HITS_COLUMNS = [f"hits_at_{k}" for k in COMPARISON_HITS_AT]
+# The metrics of the metrics table that the models are ranked by in each graph,
+# to compare the graphs' rankings (ranking_agreement.csv). Hits@15 is not in
+# results.json, so a run without recomputed ranks has none.
+AGREEMENT_HITS_AT = (1, 3, 5, 10, 15)
+AGREEMENT_METRICS = [*(f"hits_at_{k}" for k in AGREEMENT_HITS_AT), "mrr"]
 
 CSV_FIELDS = ["dataset", "model", *REPORT_HITS_COLUMNS, "mrr", "count"]
 # A query is "accurate at k" in a graph when at least this share of its
@@ -1779,13 +1790,20 @@ def write_analysis(
         write_csv(kg_rows, out / REPORT_NAME)
         print(f"Wrote {len(kg_rows)} row(s) to {out / REPORT_NAME}")
         write_kg_analysis(
-            kg_runs, losses[losses["kg"] == kg], out, reference, patterns, crop
+            kg_runs,
+            losses[losses["kg"] == kg],
+            pd.DataFrame(kg_rows, columns=CSV_FIELDS),
+            out,
+            reference,
+            patterns,
+            crop,
         )
 
 
 def write_kg_analysis(
     runs: pd.DataFrame,
     losses: pd.DataFrame,
+    metrics: pd.DataFrame,
     out: Path,
     reference: str,
     patterns: list[str],
@@ -1793,13 +1811,15 @@ def write_kg_analysis(
 ) -> None:
     """
     Write the analysis of one KG to `out`: its `runs` (the `build_predictions`
-    rows of its graphs, with the `kg` and `graph` columns of `split_dataset`)
-    and the training `losses` of its graphs, as CSV files and plots, and with
-    `crop` a copy of every plot without its caption band (`write_cropped`).
+    rows of its graphs, with the `kg` and `graph` columns of `split_dataset`),
+    the training `losses` of its graphs and its rows of the metrics table
+    (`metrics`), as CSV files and plots, and with `crop` a copy of every plot
+    without its caption band (`write_cropped`).
     """
     kg = runs["kg"].iat[0]
     predictions = runs[PREDICTION_COLUMNS]
     relation_comparison = compare_relations(runs, reference)
+    rankings = ranking_agreement(split_dataset(metrics), reference, AGREEMENT_METRICS)
     paired = compare_queries(query_table(predictions), reference, patterns)
     report = relation_report(predictions)
     tables = {
@@ -1811,6 +1831,13 @@ def write_kg_analysis(
         print(f"note: {kg} has no '{reference}' graph, so no relations were compared")
     else:
         tables["relation_comparison.csv"] = relation_comparison
+    if rankings.empty:
+        print(
+            f"note: {kg} has no '{reference}' graph or no other graph, so no model rankings "
+            "were compared"
+        )
+    else:
+        tables["ranking_agreement.csv"] = rankings
     if paired.empty:
         print(
             f"note: no query of {kg} is held out in both '{reference}' and a graph matching "

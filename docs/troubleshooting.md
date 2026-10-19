@@ -65,6 +65,13 @@ graphs of its KG share no model or no relation. `relation_comparison.csv` is not
 that KG's analysis folder by an earlier run is out of date.
 **Fix:** pass the name of the reference graph's folder with `--reference`.
 
+### `note: <kg> has no 'source' graph or no other graph, so no model rankings were compared`
+
+**Cause:** no folder is named like `--reference` (default `source`), or the reference is the only graph of its
+KG in the metrics table. `ranking_agreement.csv` is not written, so one left in that KG's analysis folder by an
+earlier run is out of date.
+**Fix:** pass the name of the reference graph's folder with `--reference`.
+
 ### `note: no query of <kg> is held out in both 'source' and a graph matching ... with the same model`
 
 **Cause:** no sibling folder matches `--compare` (default `skgg*`), no model was trained on both graphs, or

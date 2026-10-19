@@ -1,13 +1,16 @@
 # KG completion and evaluation
 
 KGC-Benchmark trains knowledge graph embedding models with [PyKEEN](https://pykeen.readthedocs.io/) on one
-or more graphs, reports standard link-prediction metrics, and compares the graphs prediction by prediction.
+or more graphs, reports standard link-prediction metrics, and compares the graphs prediction by prediction and
+by how they rank the models.
 
 ```
 KGC-Benchmark/
 ├── KGC.py               Train and evaluate models, optionally after hyperparameter optimization
 ├── input.json           Configuration for KGC.py
-└── report_results.py    Collect Hits@k and MRR into one CSV and analyse every test prediction
+├── report_results.py    Collect Hits@k and MRR into one CSV and analyse every test prediction
+├── cliffs_delta.py      Cliff's delta, the effect size of the relation comparison
+└── kendall_tau.py       Kendall's tau between the model rankings of two graphs
 ```
 
 ## Input
@@ -70,6 +73,8 @@ With `"hpo": true`, KGC.py searches each model's hyperparameters before step 4, 
 
 To compare graphs, for example a KG and synthetic graphs generated from it, run KGC.py once per graph with the same models and the same `random_seed`. Give each graph its own `results_path` under a common folder (see [Folder layout](#folder-layout)), then run `report_results.py`.
 
+Each graph then works as a benchmark for those models. `ranking_agreement.csv` shows which synthetic graph ranks the models most like the original (see [Comparing model rankings across graphs](#comparing-model-rankings-across-graphs)). A model trained on only one of two graphs is left out of their comparison, so train every model on every graph.
+
 The models used so far are TransE, TransH, TransD, RotatE, ComplEx, TuckER and CompGCN. Other PyKEEN models can be listed in `models` too, but haven't been tried.
 
 > A graph normalized by [VANILLA](https://github.com/SDM-TIB/VANILLA) gives each triple a predicate specific to its object, so it has many more distinct relations than the original. Keep this in mind when comparing models and reading their memory use.
@@ -79,7 +84,7 @@ The models used so far are TransE, TransH, TransD, RotatE, ComplEx, TuckER and C
 `report_results.py` gathers the runs of every graph into one place, in two steps:
 
 1. **The metrics table.** It writes Hits@1 to Hits@1000, MRR and count, from the `both` / `realistic` slice (see [Evaluation metrics](#evaluation-metrics)), to `metrics_report.csv` in the `--root` folder (`Output/` by default). There is one row per dataset and model. MRR, count and Hits@1, 3, 5 and 10 come from the run's `results.json`. PyKEEN doesn't store the other values of k, so they are counted from the ranks of the per-prediction analysis, and stay empty for a run it leaves out.
-2. **The per-prediction analysis.** It recomputes the rank of every test prediction behind that table, and compares the graphs relation by relation and query by query. The results go to one folder per KG, `Output/<kg>/prediction_analysis/`. See [Per-prediction analysis](#per-prediction-analysis).
+2. **The per-prediction analysis.** It recomputes the rank of every test prediction behind that table, and compares the graphs relation by relation and query by query. It also compares how each graph ranks the models. The results go to one folder per KG, `Output/<kg>/prediction_analysis/`. See [Per-prediction analysis](#per-prediction-analysis).
 
 ```bash
 python report_results.py                                         # source vs every skgg* folder
@@ -223,6 +228,7 @@ Every plot keeps its title and explanation in a band at the top, exactly 330 pix
 | `relation_report.csv` | dataset, model and relation | The columns of `metrics_report.csv`, computed per relation |
 | `training_losses.csv` | dataset, model and epoch | The training `loss` of each epoch, as PyKEEN stores it in `results.json`: averaged over the training triples. Every run of the table is included, even one the analysis leaves out |
 | `relation_comparison.csv` | KG, compared graph, model and relation | Each relation in the reference graph against every other graph, see [Comparing relations across graphs](#comparing-relations-across-graphs) |
+| `ranking_agreement.csv` | KG, compared graph and metric | How alike the reference graph and every other graph rank the models, as a Kendall's tau, see [Comparing model rankings across graphs](#comparing-model-rankings-across-graphs) |
 | `query_comparison.csv` | query paired between two graphs | The `query`, then for each graph (`reference_` and `compared_` columns): its number of held-out `answers`, their `mrr`, and the share of them in the top k (`hits_at_k`, for k = 1, 3, 5 and 10) |
 | `query_comparison_summary.csv` | comparison, model, group of queries and k | See the table below |
 | `relations.png` | KG | `relation_report.csv` as a chart: one row of panels per model, MRR and Hits@10 per relation, and one column per graph. Each graph keeps its color in every plot: the reference first, then the compared graphs, then the rest (e.g. source, skgg.std=1.filled, pygraft) |
@@ -274,6 +280,23 @@ The graphs have different numbers of entities (PyGraft 1,089, source 2,038), so 
 The bootstrap interval and the tests can disagree. The interval is about the mean of the reciprocal ranks, which only the top of the ranking moves. The tests weigh every prediction, wherever it ranks. A relation can therefore gain MRR in a few top-ranked predictions while its distribution as a whole does not change significantly.
 
 See [Cliff's delta and p-values](#cliffs-delta-and-p-values) for how `cliffs_delta` and the p-values are computed and how to read them.
+
+### Comparing model rankings across graphs
+
+`ranking_agreement.csv` treats each graph as a **benchmark** and asks: **does another graph rank the models in the same order as the reference graph?** A synthetic graph that does would lead to the same conclusions about which model is best, even when every model scores higher or lower on it. For example, the ranking of models by their MRR on `source` is compared with their ranking by MRR on `skgg.std=1.filled`.
+
+- It compares the reference with every other graph of the KG, PyGraft and KBGen included, since a ranking needs no shared entities.
+- It ranks the models by each of Hits@1, Hits@3, Hits@5, Hits@10, Hits@15 and MRR, from the rows of `metrics_report.csv`. The `AGREEMENT_HITS_AT` setting in `report_results.py` holds these k.
+- A model counts only when it was trained on both graphs and has a value of the metric in both. Hits@15 is not in `results.json`, so a run that the analysis left out has none, and it drops out of the Hits@15 row only.
+
+| Column | Meaning |
+|---|---|
+| `metric` | The metric the models are ranked by: `hits_at_1` to `hits_at_15`, or `mrr`. |
+| `models` | Number of models ranked in both graphs. |
+| `kendall_tau` | Kendall's tau (tau-b) of the two rankings, from −1 (reversed order) through 0 (unrelated) to +1 (the same order). See [Kendall's tau](#kendalls-tau). Empty below 2 models, or when one graph gives every model the same value. |
+| `kendall_p` | Its p-value: how likely a tau this far from 0 would be if the two rankings were unrelated. It is not corrected for multiple tests. |
+
+To find the graph that best stands in for the reference, compare `kendall_tau` across the `compared` graphs, one metric at a time.
 
 ## Cliff's delta and p-values
 
@@ -396,6 +419,49 @@ For example, 0.01, 0.02 and 0.04 become 0.03, 0.04 and 0.04. A family is all the
 | 0.05 or more | not negligible | Inconclusive: there may be a difference, but too few predictions to tell. For example, `father` for SKGG (PCA 0.9) with CompGCN has only 62 predictions |
 
 Showing that two graphs behave alike needs an equivalence test, which the project does not run yet. See the [backlog](backlog.md).
+
+## Kendall's tau
+
+**Meaning.** Rank the same models by one metric in two graphs, and take every pair of models. The pair is **concordant** when both graphs put the same model ahead, and **discordant** when they put different models ahead. Kendall's tau is the share of concordant pairs minus the share of discordant pairs:
+
+| τ | Meaning |
+|---|---|
+| +1 | Both graphs rank the models in the same order |
+| 0 | The two orders are unrelated |
+| −1 | One graph ranks the models in the reverse order of the other |
+
+Only the order counts, not how far apart the scores are. A graph on which every model scores half as much as on the reference still has τ = +1.
+
+**Definition.** With n models there are n₀ = n (n − 1) / 2 pairs. With C concordant and D discordant pairs:
+
+```
+τ = (C − D) / n₀
+```
+
+Two models with the same value of the metric, for example two models with Hits@15 = 1, are **tied**, and their pair is neither concordant nor discordant. The script uses **tau-b**, which divides by the pairs that are not tied rather than by every pair. Two identical rankings with ties then still get +1:
+
+```
+τ_b = (C − D) / √((n₀ − n₁) × (n₀ − n₂))
+```
+
+where n₁ and n₂ are the pairs tied in the reference graph and in the compared graph. Without ties, τ_b = τ.
+
+**Computation.** The code is in [`kendall_tau.py`](../kendall_tau.py), whose docstring repeats this section. Its `ranking_agreement` takes the rows of `metrics_report.csv`. For every graph pair and metric, it calls `kendall_tau`, which calls `scipy.stats.kendalltau`. SciPy computes tau-b by default, and its p-value as well: exactly for a few models without ties, and from a normal approximation otherwise. pandas' `DataFrame.corr(method="kendall")` gives the same tau, but no p-value. `pairwise_kendall_tau` follows the definition literally, comparing every pair of models, to check `kendall_tau`. `python kendall_tau.py` runs that check on the example below and on random samples.
+
+A small example, with the MRR of four models:
+
+| Model | Reference | Compared |
+|---|---|---|
+| A | 0.40 (1st) | 0.35 (1st) |
+| B | 0.30 (2nd) | 0.15 (3rd) |
+| C | 0.20 (3rd) | 0.25 (2nd) |
+| D | 0.10 (4th) | 0.05 (4th) |
+
+Of the 6 pairs, only B and C are in a different order, so τ = (5 − 1) / 6 = 0.67.
+
+**Reading τ with few models.** Seven models make only 21 pairs, and one swap of two neighbouring models changes τ by 2/21 = 0.095. The p-value is therefore large unless the agreement is nearly perfect. For 7 models without ties, τ = 0.62 (4 discordant pairs) has p = 0.069, and p falls below 0.05 only from τ = 0.71 (3 discordant pairs or fewer). Compare the τ of the graphs with each other to see which one ranks the models most like the reference. Read the p-value only as a reminder that τ rests on few models.
+
+**References.** M. G. Kendall, "A new measure of rank correlation", *Biometrika* 30(1–2), 1938. M. G. Kendall, "The treatment of ties in ranking problems", *Biometrika* 33(3), 1945.
 
 ## Requirements
 
