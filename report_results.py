@@ -18,7 +18,7 @@ of the "both"/"realistic" slice of each one -- "both" combines head and
 tail prediction, "realistic" is the standard filtered-ranking evaluation
 reported in the KG completion literature -- and writes one row per
 dataset/model pair to a CSV. The CSV holds Hits@k for every k from 1 to
-15: the k that results.json lacks are counted from the recomputed ranks
+1000: the k that results.json lacks are counted from the recomputed ranks
 below, so they stay empty for a run that couldn't be ranked.
 
 The per-prediction analysis goes below those averages. `results.json` only
@@ -98,6 +98,8 @@ from PIL import Image
 from pykeen.triples import TriplesFactory
 from scipy.stats import ks_2samp, mannwhitneyu, spearmanr
 
+from cliffs_delta import cliffs_delta, effect_size
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_ROOT = SCRIPT_DIR / "Output"
 # The metrics table, written to `<root>/REPORT_NAME` (or --output) for every
@@ -136,8 +138,13 @@ FOLDER_NAMES = {
     "pygraft": "PyGraft",
 }
 
-# Every k reported, in the tables and the Hits@k line plots. results.json
-# only holds k = 1, 3, 5 and 10; the others come from the recomputed ranks.
+# Every k of the metrics tables (metrics_report.csv and relation_report.csv).
+# results.json only holds k = 1, 3, 5 and 10; the others come from the
+# recomputed ranks.
+REPORT_HITS_AT = tuple(range(1, 1001))
+REPORT_HITS_COLUMNS = [f"hits_at_{k}" for k in REPORT_HITS_AT]
+# Every k of the Hits@k line plots and of the per-prediction hits of
+# predictions.csv, which holds each prediction's rank for any other k.
 HITS_AT = tuple(range(1, 16))
 HITS_COLUMNS = [f"hits_at_{k}" for k in HITS_AT]
 HITS_RANGE = f"Hits@{min(HITS_AT)} to Hits@{max(HITS_AT)}"
@@ -153,7 +160,7 @@ HEADLINE_K = 10
 COMPARISON_HITS_AT = (1, 3, 5, 10)
 COMPARISON_HITS_COLUMNS = [f"hits_at_{k}" for k in COMPARISON_HITS_AT]
 
-CSV_FIELDS = ["dataset", "model", *HITS_COLUMNS, "mrr", "count"]
+CSV_FIELDS = ["dataset", "model", *REPORT_HITS_COLUMNS, "mrr", "count"]
 # A query is "accurate at k" in a graph when at least this share of its
 # held-out answers rank within the top k. Most queries have one answer, so
 # this is usually just a hit or a miss.
@@ -170,9 +177,6 @@ BOOTSTRAP_SAMPLES = 2000
 BOOTSTRAP_SEED = 0
 # Holm-adjusted p-values below this are significant in the plots.
 SIGNIFICANCE = 0.05
-# Upper bounds of |Cliff's delta| for each effect size label (Romano et al.,
-# 2006); anything above the last bound is "large".
-EFFECT_SIZES = [(0.147, "negligible"), (0.33, "small"), (0.474, "medium")]
 
 PREDICTION_COLUMNS = [
     "dataset",
@@ -486,14 +490,34 @@ def build_predictions(base: Path, rows: list[dict]) -> pd.DataFrame:
     return predictions[PREDICTION_COLUMNS]
 
 
+def hits_by(predictions: pd.DataFrame, by: list[str]) -> pd.DataFrame:
+    """
+    Hits@k for every k of REPORT_HITS_AT per group of `predictions` by the
+    `by` columns: the share of the group's ranks within the top k. Counted
+    from the sorted ranks rather than from one column per k, which would
+    take a thousand columns per prediction.
+    """
+    ks = np.array(REPORT_HITS_AT)
+    keys, hits = [], []
+    for key, ranks in predictions.groupby(by)["rank"]:
+        keys.append(key)
+        sorted_ranks = np.sort(ranks.to_numpy())
+        hits.append(np.searchsorted(sorted_ranks, ks, side="right") / len(ranks))
+    return pd.DataFrame(
+        np.array(hits, dtype=float).reshape(len(hits), len(ks)),
+        index=pd.MultiIndex.from_tuples(keys, names=by),
+        columns=REPORT_HITS_COLUMNS,
+    )
+
+
 def add_hits_from_ranks(rows: list[dict], predictions: pd.DataFrame) -> None:
     """
-    Fill Hits@k for every k of HITS_AT into the table's `rows`, from the
-    recomputed ranks of each run (head and tail pooled, like the "both"
+    Fill Hits@k for every k of REPORT_HITS_AT into the table's `rows`, from
+    the recomputed ranks of each run (head and tail pooled, like the "both"
     slice). A run that couldn't be ranked keeps the k that results.json
     holds, and the other columns stay empty.
     """
-    hits = predictions.groupby(["dataset", "model"])[HITS_COLUMNS].mean()
+    hits = hits_by(predictions, ["dataset", "model"])
     for row in rows:
         key = (row["dataset"], row["model"])
         if key in hits.index:
@@ -502,8 +526,9 @@ def add_hits_from_ranks(rows: list[dict], predictions: pd.DataFrame) -> None:
 
 def relation_report(predictions: pd.DataFrame) -> pd.DataFrame:
     """The table's metrics per relation, head and tail predictions pooled like the "both" slice."""
-    grouped = predictions.groupby(["dataset", "model", "relation"])
-    report = grouped[HITS_COLUMNS].mean()
+    by = ["dataset", "model", "relation"]
+    grouped = predictions.groupby(by)
+    report = hits_by(predictions, by)
     report["mrr"] = grouped["reciprocal_rank"].mean()
     report["count"] = grouped.size()
     return report.reset_index()
@@ -706,14 +731,6 @@ def holm(p_values: pd.Series) -> pd.Series:
     return adjusted.reindex(p_values.index)
 
 
-def effect_size(delta: float) -> str:
-    """Label the size of a Cliff's delta: negligible, small, medium or large."""
-    for bound, label in EFFECT_SIZES:
-        if abs(delta) < bound:
-            return label
-    return "large"
-
-
 def bootstrap_difference(
     x: pd.Series, y: pd.Series, rng: np.random.Generator
 ) -> tuple[float, float]:
@@ -736,10 +753,11 @@ def compare_relations(predictions: pd.DataFrame, reference: str) -> pd.DataFrame
 
     `mrr_difference` (compared - reference) comes with a 95% bootstrap
     interval. The rank distributions are compared on `normalized_rank`:
-    Cliff's delta is P(compared ranks better) - P(reference ranks better),
-    negative when the compared graph does worse; the Mann-Whitney test asks
-    whether one graph tends to rank better, the KS test whether the
-    distributions differ at all. Their p-values are Holm-adjusted over the
+    Cliff's delta (see cliffs_delta.py) is P(compared ranks better) -
+    P(reference ranks better), negative when the compared graph does worse,
+    and `effect_size` labels its size; the Mann-Whitney test asks whether
+    one graph tends to rank better, the KS test whether the distributions
+    differ at all. Their p-values are Holm-adjusted over the
     relations of each graph pair and model; the ALL_RELATIONS test is a
     family of its own, so its adjusted p-value is its p-value.
     """
@@ -761,13 +779,11 @@ def compare_relations(predictions: pd.DataFrame, reference: str) -> pd.DataFrame
     # the same with or without them.
     rows = []
     for kg, compared, model, relation, x, y in pairs + pooled:
-        # U counts the pairs where the reference ranks further down than the
-        # compared graph, i.e. where the compared one is better.
         mann_whitney = mannwhitneyu(
             x["normalized_rank"], y["normalized_rank"], alternative="two-sided"
         )
         ks = ks_2samp(x["normalized_rank"], y["normalized_rank"])
-        delta = 2 * mann_whitney.statistic / (len(x) * len(y)) - 1
+        delta = cliffs_delta(x["normalized_rank"], y["normalized_rank"])
         low, high = bootstrap_difference(x["reciprocal_rank"], y["reciprocal_rank"], rng)
         rows.append(
             {

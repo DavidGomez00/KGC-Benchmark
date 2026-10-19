@@ -91,7 +91,7 @@ Output/
 
 Then run `python report_results.py`. It writes:
 
-- **`Output/metrics_report.csv`**: Hits@1 to Hits@15 and MRR, with one row per graph and model.
+- **`Output/metrics_report.csv`**: Hits@1 to Hits@1000 and MRR, with one row per graph and model.
 - **`Output/<kg>/prediction_analysis/`**, one per KG (e.g. `Output/french_royalty/prediction_analysis/`): the
   KG's rows of `metrics_report.csv`, the rank of every test prediction, the metrics per relation, and plots:
   - **Hits@1 to Hits@15**: one line per model for each graph (`models_hits_at_1-15.png`), and one line

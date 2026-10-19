@@ -78,7 +78,7 @@ The models used so far are TransE, TransH, TransD, RotatE, ComplEx, TuckER and C
 
 `report_results.py` gathers the runs of every graph into one place, in two steps:
 
-1. **The metrics table.** It writes Hits@1 to Hits@15, MRR and count, from the `both` / `realistic` slice (see [Evaluation metrics](#evaluation-metrics)), to `metrics_report.csv` in the `--root` folder (`Output/` by default). There is one row per dataset and model. MRR, count and Hits@1, 3, 5 and 10 come from the run's `results.json`. PyKEEN doesn't store the other values of k, so they are counted from the ranks of the per-prediction analysis, and stay empty for a run it leaves out.
+1. **The metrics table.** It writes Hits@1 to Hits@1000, MRR and count, from the `both` / `realistic` slice (see [Evaluation metrics](#evaluation-metrics)), to `metrics_report.csv` in the `--root` folder (`Output/` by default). There is one row per dataset and model. MRR, count and Hits@1, 3, 5 and 10 come from the run's `results.json`. PyKEEN doesn't store the other values of k, so they are counted from the ranks of the per-prediction analysis, and stay empty for a run it leaves out.
 2. **The per-prediction analysis.** It recomputes the rank of every test prediction behind that table, and compares the graphs relation by relation and query by query. The results go to one folder per KG, `Output/<kg>/prediction_analysis/`. See [Per-prediction analysis](#per-prediction-analysis).
 
 ```bash
@@ -158,7 +158,7 @@ Each `<results_path>/<model>/results.json` stores the metrics as `metrics[<side>
 
 | Metric | Key in `results.json` | Range | Better | Meaning |
 |---|---|---|---|---|
-| Hits@k (k = 1 to 15) | `hits_at_1` to `hits_at_15` | 0 to 1 | Higher | Fraction of test predictions where the true entity is among the top *k* candidates. Hits@1 is the fraction where the model's single best guess is correct. Hits@10 = 0.40 means the right answer is in the top 10 for 40% of predictions. Hits@k never decreases as k grows. `results.json` only holds k = 1, 3, 5 and 10. |
+| Hits@k (k = 1 to 1000) | `hits_at_1` to `hits_at_1000` | 0 to 1 | Higher | Fraction of test predictions where the true entity is among the top *k* candidates. Hits@1 is the fraction where the model's single best guess is correct. Hits@10 = 0.40 means the right answer is in the top 10 for 40% of predictions. Hits@k never decreases as k grows. `results.json` only holds k = 1, 3, 5 and 10. |
 | Mean Reciprocal Rank (MRR) | `inverse_harmonic_mean_rank` | 0 to 1 | Higher | Mean of `1 / rank` over all predictions. Rank 1 adds 1, rank 2 adds 0.5, rank 10 adds 0.1, and rank 1000 adds almost nothing. It rewards answers at or near the top, and it barely changes whether a missed answer sits at rank 200 or rank 2000. |
 | count | `count` | Up to 2 × test triples | n/a | Number of ranks the metrics average over. In the `both` slice this is two per test triple (one head prediction and one tail prediction). |
 
@@ -219,7 +219,7 @@ Every plot keeps its title and explanation in a band at the top, exactly 330 pix
 | File | One row per | Contents |
 |---|---|---|
 | `metrics_report.csv` | dataset and model | The rows of the metrics table (`--output`) for this KG only, with the same columns |
-| `predictions.csv` | test prediction of every run | `side` (the entity predicted, `head` or `tail`), the test triple, `rank`, `candidates` (the entities it was ranked among, after filtering), `reciprocal_rank`, and `hits_at_1` to `hits_at_15` (1 or 0) |
+| `predictions.csv` | test prediction of every run | `side` (the entity predicted, `head` or `tail`), the test triple, `rank`, `candidates` (the entities it was ranked among, after filtering), `reciprocal_rank`, and `hits_at_1` to `hits_at_15` (1 or 0; `rank` gives any other k) |
 | `relation_report.csv` | dataset, model and relation | The columns of `metrics_report.csv`, computed per relation |
 | `training_losses.csv` | dataset, model and epoch | The training `loss` of each epoch, as PyKEEN stores it in `results.json`: averaged over the training triples. Every run of the table is included, even one the analysis leaves out |
 | `relation_comparison.csv` | KG, compared graph, model and relation | Each relation in the reference graph against every other graph, see [Comparing relations across graphs](#comparing-relations-across-graphs) |
@@ -302,11 +302,33 @@ It goes from −1 to +1:
 
 For example, δ = −0.64 means that in a random pair, the compared graph ranks worse 64 percentage points more often than it ranks better.
 
-**Computation.** `compare_relations` in `report_results.py` computes it for every relation, model and pair of graphs:
+**Definition.** With r₁ … rₙ the normalized ranks of the reference graph's n predictions and c₁ … cₘ those of the compared graph's m predictions (lower is better):
+
+```
+δ = ( #{(i, j) : cⱼ < rᵢ}  −  #{(i, j) : cⱼ > rᵢ} ) / (n × m)
+```
+
+**Computation.** The code is in [`cliffs_delta.py`](../cliffs_delta.py), whose docstring repeats this section. `compare_relations` in `report_results.py` calls its `cliffs_delta` for every relation, model and pair of graphs:
 
 1. **Normalize the ranks.** Each prediction's rank becomes `(rank − 1) / (candidates − 1)`, so that graphs with different numbers of entities are on one scale (see [Comparing relations across graphs](#comparing-relations-across-graphs)).
 2. **Compare every pair.** In principle, δ compares every prediction of the reference graph with every prediction of the compared graph. It counts the pairs where the compared one ranks better, subtracts the pairs where it ranks worse, and divides by the number of pairs. A tie counts for neither side.
-3. **Take it from the Mann-Whitney U statistic.** The U statistic already counts those pairs (a tie counts as half), so the script computes `δ = 2U / (n_reference × n_compared) − 1` without building the pairs.
+3. **Take it from the Mann-Whitney U statistic.** `scipy.stats.mannwhitneyu(reference, compared)` returns the U of its first sample, which counts those pairs with a tie as half:
+
+   ```
+   U = #{rᵢ > cⱼ} + ½ × #{rᵢ = cⱼ}
+   ```
+
+   Every pair is either better, worse or tied, so `#{r > c} + #{r < c} + #{r = c} = n × m`, and therefore:
+
+   ```
+   δ = 2U / (n × m) − 1
+   ```
+
+   `cliffs_delta(reference, compared)` computes δ this way, from the same U as the Mann-Whitney test (see [p-values](#p-values)). Sorting the ranks takes O((n + m) log(n + m)) time, whereas building every pair takes n × m comparisons. This needs SciPy 1.7 or later. Older versions return the smaller of the two samples' U values, so δ would never be positive.
+
+The same number goes by other names. δ is the **rank-biserial correlation**. With A = U / (n × m), the **common-language effect size** (also called the Vargha-Delaney A, or the AUC), δ = 2A − 1.
+
+**Libraries.** Neither SciPy nor NumPy has a Cliff's delta function. [pingouin](https://pingouin-stats.org)'s `pingouin.mwu(reference, compared)["RBC"]` gives the same value with the same sign, but the project does not depend on it. `pairwise_cliffs_delta` in `cliffs_delta.py` follows the definition literally, comparing every pair, to check `cliffs_delta`. `python cliffs_delta.py` runs that check on the example below and on random samples.
 
 A small example, with normalized ranks where lower is better:
 
@@ -319,7 +341,7 @@ The compared graph is better in 1 of the 4 pairs and worse in 3, so δ = (1 − 
 
 **Why this effect size.** Ranks are far from normally distributed: most fall near the top or spread over a long tail. Cliff's delta needs no assumption about their distribution, a few extreme ranks don't distort it, and it doesn't grow with the number of predictions. That last point makes relations of different sizes comparable.
 
-**How large is large.** The `effect` column labels |δ| with the bounds of Romano et al. (2006), which `EFFECT_SIZES` in `report_results.py` holds:
+**How large is large.** The `effect` column labels |δ| with the bounds of Romano et al. (2006), which `EFFECT_SIZES` in `cliffs_delta.py` holds:
 
 | \|δ\| | `effect` |
 |---|---|
@@ -333,6 +355,8 @@ The compared graph is better in 1 of the 4 pairs and worse in 3, so δ = (1 − 
 - the δ under each panel title of `<model>_hits_at_k.png`, one line per compared graph
 
 **Limit.** δ only measures whether one graph tends to rank better. Two distributions can have δ near 0 and still differ in shape, for example when one graph ranks its predictions both higher and lower more often. The Kolmogorov-Smirnov test below detects that.
+
+**References.** N. Cliff, "Dominance statistics: Ordinal analyses to answer ordinal questions", *Psychological Bulletin* 114(3), 1993. J. Romano, J. D. Kromrey, J. Coraggio and J. Skowronek, "Appropriate statistics for ordinal level data: Should we really be using t-test and Cohen's d for evaluating group differences on the NSSE and other surveys?", Annual meeting of the Florida Association of Institutional Research, 2006.
 
 ### p-values
 

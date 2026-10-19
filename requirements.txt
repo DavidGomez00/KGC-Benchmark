@@ -2,5 +2,6 @@ pykeen
 torch
 pandas
 numpy
-scipy
+scipy>=1.7
 matplotlib
+seaborn
